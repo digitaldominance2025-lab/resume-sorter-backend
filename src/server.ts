@@ -223,8 +223,21 @@ async function logAuthedGoogleEmailFromTokens(): Promise<string | null> {
   }
 }
 
-async function loadTokensFromDisk(): Promise<boolean> {
+async function loadTokensFromEnvOrDisk(): Promise<boolean> {
   try {
+    const envRaw = String(process.env.GOOGLE_TOKENS_JSON || "").trim();
+
+    if (envRaw) {
+      const tokens = JSON.parse(envRaw);
+      oauth2Client.setCredentials(tokens);
+      console.log("✅ Loaded Google tokens from GOOGLE_TOKENS_JSON (env)");
+
+      if (LOG_AUTHED_GOOGLE_EMAIL) {
+        await logAuthedGoogleEmailFromTokens();
+      }
+      return true;
+    }
+
     if (!fs.existsSync(TOKENS_PATH)) {
       console.log("ℹ️ No token file found yet. Need /auth once.");
       return false;
@@ -242,14 +255,15 @@ async function loadTokensFromDisk(): Promise<boolean> {
 
     return true;
   } catch (e: any) {
-    console.log("⚠️ Failed to load token file:", e?.message || e);
+    console.log("⚠️ Failed to load Google tokens:", e?.message || e);
     return false;
   }
 }
-void (async () => {
-  await loadTokensFromDisk();
-})();
 
+void (async () => {
+  console.log("ENV TOKENS PRESENT:", !!process.env.GOOGLE_TOKENS_JSON);
+  await loadTokensFromEnvOrDisk();
+})();
 // ============================
 // DB bootstrap (AUTO)
 // ============================
