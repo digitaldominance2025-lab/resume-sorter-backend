@@ -4,7 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "ts-node-dev src/server.ts",
-    "build": "tsc"
+    "build": "tsc",
+    "start": "node dist/server.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.985.0",
