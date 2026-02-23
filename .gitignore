@@ -1,0 +1,32 @@
+# Secrets
+.env
+.tokens/
+
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Upload/temp folders
+tmp/
+inbound/
+intake/
+
+# Test / junk files
+*.txt
+*.pdf
+*.bin
+*.png
+desktop.ini
+devlog.txt
+payload-upload.json
+inbound-r2.json
+
+# OS
+.DS_Store
+Thumbs.db
+intake-*.json
+notebook
+resume-sorter-backend@*
+ts-node-dev

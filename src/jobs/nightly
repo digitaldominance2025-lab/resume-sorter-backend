@@ -1,0 +1,229 @@
+// src/jobs/nightly.ts
+import cron from "node-cron";
+import { addDays, formatISO } from "date-fns";
+import { zonedTimeToUtc, utcToZonedTime } from "date-fns-tz";
+import { google } from "googleapis";
+import { sendAdminEmail } from "../services/email";
+
+const TIMEZONE = "America/Edmonton";
+
+// ====== CONFIG ======
+// You already have oauth2Client in server.ts. We'll pass it in to avoid circular imports.
+type NightlyConfig = {
+  oauth2Client: any; // google auth client
+  masterSheetId: string; // process.env.MASTER_CUSTOMERS_SHEET_ID
+  masterSheetTabName: string; // e.g. "customers"
+  adminEmail: string; // digitaldominance2025@gmail.com
+};
+
+type CustomerRow = {
+  rowNumber: number;
+  customerId: string;
+  companyName: string;
+  slug: string;
+  intakeEmail: string;
+  trialEndsAtISO: string; // ISO date string
+  status: string;
+};
+
+function safeStr(v: any) {
+  return (v ?? "").toString().trim();
+}
+
+function parseISODate(s: string): Date | null {
+  if (!s) return null;
+  const d = new Date(s);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+// Assumes your MASTER sheet has a header row and the following columns (case-insensitive match):
+// customerId, companyName, slug, intakeEmail, trialEndsAt, status
+function mapHeaderIndexes(headers: string[]) {
+  const norm = headers.map((h) => h.trim().toLowerCase());
+  const idx = (name: string) => norm.indexOf(name.toLowerCase());
+  return {
+    customerId: idx("customerId"),
+    companyName: idx("companyName"),
+    slug: idx("slug"),
+    intakeEmail: idx("intakeEmail"),
+    trialEndsAt: idx("trialEndsAt"),
+    status: idx("status"),
+  };
+}
+
+async function readCustomersFromMasterSheet(cfg: NightlyConfig): Promise<CustomerRow[]> {
+  const sheets = google.sheets({ version: "v4", auth: cfg.oauth2Client });
+
+  // Read the whole tab (safe for small/medium; if huge later, we’ll optimize).
+  const range = `${cfg.masterSheetTabName}!A:Z`;
+  const resp = await sheets.spreadsheets.values.get({
+    spreadsheetId: cfg.masterSheetId,
+    range,
+  });
+
+  const values = resp.data.values || [];
+  if (values.length < 2) return [];
+
+  const headers = (values[0] || []).map(String);
+  const col = mapHeaderIndexes(headers);
+
+  // Basic validation
+  const required = ["customerId", "companyName", "slug", "intakeEmail", "trialEndsAt", "status"] as const;
+  for (const k of required) {
+    if ((col as any)[k] === -1) {
+      throw new Error(
+        `MASTER sheet is missing required column header: "${k}". Found headers: ${headers.join(", ")}`
+      );
+    }
+  }
+
+  const out: CustomerRow[] = [];
+  for (let i = 1; i < values.length; i++) {
+    const row = values[i] || [];
+    const customerId = safeStr(row[col.customerId]);
+    if (!customerId) continue;
+
+    out.push({
+      rowNumber: i + 1, // 1-based in Sheets
+      customerId,
+      companyName: safeStr(row[col.companyName]),
+      slug: safeStr(row[col.slug]),
+      intakeEmail: safeStr(row[col.intakeEmail]),
+      trialEndsAtISO: safeStr(row[col.trialEndsAt]),
+      status: safeStr(row[col.status]) || "trial",
+    });
+  }
+
+  return out;
+}
+
+async function updateCustomerStatusInMasterSheet(
+  cfg: NightlyConfig,
+  rowNumber: number,
+  newStatus: string
+) {
+  const sheets = google.sheets({ version: "v4", auth: cfg.oauth2Client });
+
+  // We don't know the exact status column letter here without header mapping again.
+  // Easiest: re-fetch header and compute column letter, but we already did earlier.
+  // So: simple approach: write using a fixed column name by searching header again.
+  const headerResp = await sheets.spreadsheets.values.get({
+    spreadsheetId: cfg.masterSheetId,
+    range: `${cfg.masterSheetTabName}!1:1`,
+  });
+
+  const headers = (headerResp.data.values?.[0] || []).map(String);
+  const col = mapHeaderIndexes(headers);
+  if (col.status === -1) throw new Error("Could not find 'status' header to update.");
+
+  // Convert 0-based index to column letter (A=1)
+  const colIndex = col.status + 1;
+
+  function columnLetter(n: number) {
+    let s = "";
+    while (n > 0) {
+      const m = (n - 1) % 26;
+      s = String.fromCharCode(65 + m) + s;
+      n = Math.floor((n - 1) / 26);
+    }
+    return s;
+  }
+
+  const letter = columnLetter(colIndex);
+  const range = `${cfg.masterSheetTabName}!${letter}${rowNumber}`;
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: cfg.masterSheetId,
+    range,
+    valueInputOption: "RAW",
+    requestBody: { values: [[newStatus]] },
+  });
+}
+
+export function startNightlyScheduler(cfg: NightlyConfig) {
+  // Runs at 2:10 AM Edmonton time, every day.
+  // Adjust to whatever you want.
+  cron.schedule(
+    "10 2 * * *",
+    async () => {
+      const nowUtc = new Date();
+      const nowLocal = utcToZonedTime(nowUtc, TIMEZONE);
+
+      const todayLocalISO = formatISO(nowLocal, { representation: "date" });
+      const cutoffLocal = addDays(nowLocal, 0); // for "ended" checks
+      const soonLocal = addDays(nowLocal, 3); // ending in next 3 days
+
+      const cutoffUtc = zonedTimeToUtc(cutoffLocal, TIMEZONE);
+      const soonUtc = zonedTimeToUtc(soonLocal, TIMEZONE);
+
+      const summary: string[] = [];
+      let endedCount = 0;
+      let endingSoonCount = 0;
+      let updatedCount = 0;
+
+      try {
+        const customers = await readCustomersFromMasterSheet(cfg);
+
+        for (const c of customers) {
+          const trialEnds = parseISODate(c.trialEndsAtISO);
+          if (!trialEnds) continue;
+
+          // Compare in UTC to avoid timezone weirdness.
+          const trialEndsUtc = trialEnds;
+
+          const isEnded = trialEndsUtc <= cutoffUtc && c.status.toLowerCase() === "trial";
+          const isEndingSoon =
+            trialEndsUtc > cutoffUtc &&
+            trialEndsUtc <= soonUtc &&
+            c.status.toLowerCase() === "trial";
+
+          if (isEnded) {
+            endedCount++;
+            // Optional: auto-update status to "trial_ended"
+            await updateCustomerStatusInMasterSheet(cfg, c.rowNumber, "trial_ended");
+            updatedCount++;
+            summary.push(
+              `TRIAL ENDED: ${c.companyName} (${c.customerId}) — ends ${c.trialEndsAtISO} — ${c.intakeEmail}`
+            );
+          } else if (isEndingSoon) {
+            endingSoonCount++;
+            summary.push(
+              `Ending soon: ${c.companyName} (${c.customerId}) — ends ${c.trialEndsAtISO} — ${c.intakeEmail}`
+            );
+          }
+        }
+
+        if (summary.length === 0) {
+          summary.push("No trial changes detected.");
+        }
+
+        await sendAdminEmail({
+          to: cfg.adminEmail,
+          subject: `Nightly Trial Report — ${todayLocalISO} (Edmonton)`,
+          html: `
+            <div style="font-family:Arial,sans-serif;line-height:1.5">
+              <h2>Nightly Trial Report</h2>
+              <p><b>Date (Edmonton):</b> ${todayLocalISO}</p>
+              <ul>
+                <li><b>Trials ended (auto-marked):</b> ${endedCount}</li>
+                <li><b>Ending within 3 days:</b> ${endingSoonCount}</li>
+                <li><b>Status rows updated:</b> ${updatedCount}</li>
+              </ul>
+              <hr/>
+              <pre style="white-space:pre-wrap">${summary.join("\n")}</pre>
+            </div>
+          `,
+        });
+      } catch (err: any) {
+        await sendAdminEmail({
+          to: cfg.adminEmail,
+          subject: `❌ Nightly Scheduler Error — ${todayLocalISO} (Edmonton)`,
+          html: `<pre>${(err?.stack || err?.message || String(err))}</pre>`,
+        });
+      }
+    },
+    { timezone: TIMEZONE }
+  );
+
+  console.log(`✅ Nightly scheduler started (timezone: ${TIMEZONE})`);
+}
