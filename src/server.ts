@@ -261,7 +261,6 @@ async function loadTokensFromEnvOrDisk(): Promise<boolean> {
 }
 
 void (async () => {
-  console.log("ENV TOKENS PRESENT:", !!process.env.GOOGLE_TOKENS_JSON);
   await loadTokensFromEnvOrDisk();
 })();
 // ============================
@@ -2645,7 +2644,7 @@ if (ENABLE_LOCAL_CRON) {
 
   console.log(`✅ Nightly scheduler started: "${NIGHTLY_CRON}" (${TIMEZONE})`);
 } else {
-  console.log("ℹ️ Nightly scheduler disabled (ENABLE_LOCAL_CRON != true)");
+  console.log("⏭️ Local cron disabled (ENABLE_LOCAL_CRON != true)");
 }
 // ============================
 // Optional debug routes
