@@ -30,3 +30,7 @@ intake-*.json
 notebook
 resume-sorter-backend@*
 ts-node-dev
+dist/
+node_modules/
+src/**/*.js
+src/**/*.js.map
