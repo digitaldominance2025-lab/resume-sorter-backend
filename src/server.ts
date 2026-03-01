@@ -27,14 +27,34 @@ import * as customerUtils from "./utils/customer";
 import { r2UploadBuffer, r2DownloadToBuffer } from "./services/r2";
 
 // pdf-parse (classic callable function) - requires: npm i pdf-parse@1.1.1
+// eslint-disable-next-line @typescript-eslint/no-var-requires
 const pdfParse: any = require("pdf-parse");
 
 dotenv.config();
 console.log("SERVER FILE LOADED");
 
+// 🔐 Centralized App Error
+class AppError extends Error {
+  statusCode: number;
+  code: string;
+  expose: boolean;
+
+  constructor(message: string, statusCode = 500, code = "internal_error", expose = false) {
+    super(message);
+    this.statusCode = statusCode;
+    this.code = code;
+    this.expose = expose; // only expose safe messages
+  }
+}
+
 // ============================
 // Helpers
 // ============================
+// --- logging helper (dev-only noise) ---
+const devLog = (...args: any[]) => {
+  const env = safeStr(process.env.NODE_ENV).toLowerCase();
+  if (env !== "production") console.log(...args);
+};
 function safeStr(v: any) {
   return (v ?? "").toString().trim();
 }
@@ -79,8 +99,173 @@ function appendNote(existing: string, note: string) {
   if (parts.includes(note)) return ex;
   return `${ex}, ${note}`;
 }
+function genRequestId() {
+  return crypto.randomBytes(12).toString("hex");
+}
+function getRequestId(req: Request | any): string {
+  return safeStr(req?.requestId);
+}
 
-// ✅ FIXED: sha256Hex only hashes; no nested allowlist junk inside
+type LogMeta = Record<string, any>;
+
+function logInfo(event: string, meta: LogMeta = {}) {
+  console.log("ℹ️", event, meta);
+}
+function logWarn(event: string, meta: LogMeta = {}) {
+  console.warn("⚠️", event, meta);
+}
+function logError(event: string, meta: LogMeta = {}) {
+  console.error("❌", event, meta);
+}
+
+// ============================
+// Config (order matters)
+// ============================
+const PORT = Number(process.env.PORT || 3001);
+const TIMEZONE = process.env.TIMEZONE || "America/Regina";
+
+const NODE_ENV = safeStr(process.env.NODE_ENV).toLowerCase();
+const IS_PROD = NODE_ENV === "production";
+
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL || "digitaldominance2025@gmail.com";
+const MASTER_SHEET_ID = process.env.MASTER_CUSTOMERS_SHEET_ID || "";
+const MASTER_SHEET_TAB = process.env.MASTER_CUSTOMERS_SHEET_TAB || "customers";
+const NIGHTLY_CRON = process.env.NIGHTLY_CRON || "10 2 * * *";
+
+const DEBUG_ROUTES_ENABLED = truthyEnv("DEBUG_ROUTES") && process.env.NODE_ENV !== "production";
+const LOG_AUTHED_GOOGLE_EMAIL = truthyEnv("LOG_AUTHED_GOOGLE_EMAIL");
+const INBOUND_FILE_ENABLED = !IS_PROD || truthyEnv("INBOUND_FILE_ENABLED"); // allow in dev, opt-in in prod
+
+// ============================
+// Lane A2 (FAIL-CLOSED): inbound-r2 secret required in prod
+// ============================
+const INBOUND_WEBHOOK_SECRET = safeStr(process.env.INBOUND_WEBHOOK_SECRET);
+const INBOUND_SECRET_REQUIRED = IS_PROD || truthyEnv("INBOUND_SECRET_REQUIRED"); // optional override in non-prod
+
+if (INBOUND_SECRET_REQUIRED && !INBOUND_WEBHOOK_SECRET) {
+  // Fail-closed: refuse to start if secret required but missing
+  console.error("❌ FATAL: INBOUND_WEBHOOK_SECRET is required but not set.");
+  process.exit(1);
+}
+
+// ============================
+// Hardening Step 2: size limits
+// ============================
+const MAX_ATTACHMENT_BYTES = Number(process.env.MAX_ATTACHMENT_BYTES || 10 * 1024 * 1024); // 10MB
+const MAX_TOTAL_ATTACH_BYTES = Number(process.env.MAX_TOTAL_ATTACH_BYTES || 25 * 1024 * 1024); // 25MB
+const MAX_ATTACHMENTS = Number(process.env.MAX_ATTACHMENTS || 10);
+
+const MAX_EXTRACTED_CHARS = Number(process.env.MAX_EXTRACTED_CHARS || 120_000);
+const MAX_OPENAI_CHARS = Number(process.env.MAX_OPENAI_CHARS || 60_000);
+
+// ============================
+// Hardening Step 3: R2 public links (OFF by default)
+// ============================
+/**
+ * ✅ Default SAFE behavior:
+ * - R2 public URLs are NOT generated unless R2_PUBLIC_LINKS=true
+ * - AND R2_PUBLIC_BASE_URL is set (extra safety switch)
+ */
+
+const R2_PUBLIC_BASE_URL = safeStr(process.env.R2_PUBLIC_BASE_URL).replace(/\/+$/, "");
+const R2_PUBLIC_LINKS = truthyEnv("R2_PUBLIC_LINKS");
+// Resend
+
+const RESEND_API_KEY = safeStr(process.env.RESEND_API_KEY);
+const RESEND_WEBHOOK_SECRET = safeStr(process.env.RESEND_WEBHOOK_SECRET);
+
+// Stripe
+const STRIPE_SECRET_KEY = safeStr(process.env.STRIPE_SECRET_KEY);
+const STRIPE_WEBHOOK_SECRET = safeStr(process.env.STRIPE_WEBHOOK_SECRET);
+const STRIPE_PRICE_ID = safeStr(process.env.STRIPE_PRICE_ID);
+
+const APP_URL = safeStr(process.env.APP_URL) || `http://localhost:${PORT}`;
+const BILLING_SUCCESS_URL = safeStr(process.env.BILLING_SUCCESS_URL) || `${APP_URL}/billing/success`;
+const BILLING_CANCEL_URL = safeStr(process.env.BILLING_CANCEL_URL) || `${APP_URL}/billing/cancel`;
+
+const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" as any }) : null;
+
+// ============================
+// Hardening: simple in-memory rate limiter (no deps)
+// ============================
+type RateRule = { windowMs: number; max: number };
+
+const RATE_LIMITS: Record<string, RateRule> = {
+  inbound_file: { windowMs: 60_000, max: 30 }, // 30/min per IP
+  inbound_r2: { windowMs: 60_000, max: 60 }, // 60/min per IP
+  resend_inbound: { windowMs: 60_000, max: 120 }, // 120/min per IP (svix verified)
+};
+
+const rateBuckets = new Map<string, { count: number; resetAt: number }>();
+
+// ✅ Hardening: prevent unbounded growth (memory leak)
+const MAX_RATE_BUCKETS = 5000;
+function pruneRateBuckets(now: number) {
+  // Fast path
+  if (rateBuckets.size < MAX_RATE_BUCKETS) return;
+
+  // Remove expired buckets first
+  for (const [k, v] of rateBuckets) {
+    if (now >= v.resetAt) rateBuckets.delete(k);
+    if (rateBuckets.size < MAX_RATE_BUCKETS) return;
+  }
+
+  // If still too big, delete oldest-ish entries (Map preserves insertion order)
+  while (rateBuckets.size > MAX_RATE_BUCKETS) {
+    const firstKey = rateBuckets.keys().next().value;
+    if (!firstKey) break;
+    rateBuckets.delete(firstKey);
+  }
+}
+
+function getClientIp(req: Request): string {
+  const xf = safeStr(req.headers["x-forwarded-for"]);
+  if (xf) return xf.split(",")[0].trim();
+  return safeStr((req.socket as any)?.remoteAddress || req.ip || "unknown");
+}
+
+function rateLimit(key: keyof typeof RATE_LIMITS) {
+  const rule = RATE_LIMITS[key];
+  return (req: Request, res: Response, next: any) => {
+    const ip = getClientIp(req);
+    const now = Date.now();
+
+    // ✅ prune occasionally
+    pruneRateBuckets(now);
+
+    const bucketKey = `${key}:${ip}`;
+
+    const cur = rateBuckets.get(bucketKey);
+    if (!cur || now >= cur.resetAt) {
+      rateBuckets.set(bucketKey, { count: 1, resetAt: now + rule.windowMs });
+      res.setHeader("X-RateLimit-Limit", String(rule.max));
+      res.setHeader("X-RateLimit-Remaining", String(rule.max - 1));
+      res.setHeader("X-RateLimit-Reset", String(Math.floor((now + rule.windowMs) / 1000)));
+      return next();
+    }
+
+    cur.count += 1;
+
+    const remaining = Math.max(rule.max - cur.count, 0);
+    res.setHeader("X-RateLimit-Limit", String(rule.max));
+    res.setHeader("X-RateLimit-Remaining", String(remaining));
+    res.setHeader("X-RateLimit-Reset", String(Math.floor(cur.resetAt / 1000)));
+
+    if (cur.count > rule.max) {
+      return res.status(429).json({
+        ok: false,
+        error: "rate_limited",
+        key,
+        windowMs: rule.windowMs,
+        max: rule.max,
+      });
+    }
+
+    return next();
+  };
+}
+
+// ✅ sha256Hex only hashes
 function sha256Hex(input: Buffer | string) {
   const buf = Buffer.isBuffer(input) ? input : Buffer.from(String(input), "utf8");
   return crypto.createHash("sha256").update(buf).digest("hex");
@@ -113,60 +298,6 @@ function unsupportedFileTypePayload(filename: string) {
     allowed: Array.from(ALLOWED_EXTS),
   };
 }
-
-// ============================
-// Config
-// ============================
-const PORT = Number(process.env.PORT || 3001);
-const TIMEZONE = process.env.TIMEZONE || "America/Regina";
-
-const ADMIN_EMAIL = process.env.ADMIN_EMAIL || "digitaldominance2025@gmail.com";
-const MASTER_SHEET_ID = process.env.MASTER_CUSTOMERS_SHEET_ID || "";
-const MASTER_SHEET_TAB = process.env.MASTER_CUSTOMERS_SHEET_TAB || "customers";
-const NIGHTLY_CRON = process.env.NIGHTLY_CRON || "10 2 * * *";
-
-const DEBUG_ROUTES_ENABLED = truthyEnv("DEBUG_ROUTES") && process.env.NODE_ENV !== "production";
-const LOG_AUTHED_GOOGLE_EMAIL = truthyEnv("LOG_AUTHED_GOOGLE_EMAIL");
-
-// ============================
-// Hardening Step 2: size limits
-// ============================
-const MAX_ATTACHMENT_BYTES = Number(process.env.MAX_ATTACHMENT_BYTES || 10 * 1024 * 1024); // 10MB
-const MAX_TOTAL_ATTACH_BYTES = Number(process.env.MAX_TOTAL_ATTACH_BYTES || 25 * 1024 * 1024); // 25MB
-const MAX_ATTACHMENTS = Number(process.env.MAX_ATTACHMENTS || 10);
-
-const MAX_EXTRACTED_CHARS = Number(process.env.MAX_EXTRACTED_CHARS || 120_000);
-const MAX_OPENAI_CHARS = Number(process.env.MAX_OPENAI_CHARS || 60_000);
-
-// ============================
-// Hardening Step 3: R2 public links (OFF by default)
-// ============================
-/**
- * ✅ Default SAFE behavior:
- * - R2 public URLs are NOT generated unless R2_PUBLIC_LINKS=true
- * - AND R2_PUBLIC_BASE_URL is set (extra safety switch)
- *
- * Example:
- *   R2_PUBLIC_LINKS=true
- *   R2_PUBLIC_BASE_URL=https://your-public-domain.com
- */
-const R2_PUBLIC_LINKS = truthyEnv("R2_PUBLIC_LINKS");
-const R2_PUBLIC_BASE_URL = safeStr(process.env.R2_PUBLIC_BASE_URL).replace(/\/+$/, "");
-
-// Resend
-const RESEND_API_KEY = safeStr(process.env.RESEND_API_KEY);
-const RESEND_WEBHOOK_SECRET = safeStr(process.env.RESEND_WEBHOOK_SECRET);
-
-// Stripe
-const STRIPE_SECRET_KEY = safeStr(process.env.STRIPE_SECRET_KEY);
-const STRIPE_WEBHOOK_SECRET = safeStr(process.env.STRIPE_WEBHOOK_SECRET);
-const STRIPE_PRICE_ID = safeStr(process.env.STRIPE_PRICE_ID);
-
-const APP_URL = safeStr(process.env.APP_URL) || `http://localhost:${PORT}`;
-const BILLING_SUCCESS_URL = safeStr(process.env.BILLING_SUCCESS_URL) || `${APP_URL}/billing/success`;
-const BILLING_CANCEL_URL = safeStr(process.env.BILLING_CANCEL_URL) || `${APP_URL}/billing/cancel`;
-
-const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" as any }) : null;
 
 // ============================
 // Google OAuth
@@ -263,6 +394,7 @@ async function loadTokensFromEnvOrDisk(): Promise<boolean> {
 void (async () => {
   await loadTokensFromEnvOrDisk();
 })();
+
 // ============================
 // DB bootstrap (AUTO)
 // ============================
@@ -302,6 +434,33 @@ async function ensureDbTables() {
 
     await pool.query(`CREATE INDEX IF NOT EXISTS inbound_docs_customer_id_idx ON inbound_docs(customer_id);`);
     await pool.query(`CREATE INDEX IF NOT EXISTS inbound_docs_r2_key_idx ON inbound_docs(r2_key);`);
+      // ============================
+    // Jobs table (multi-role support)
+    // ============================
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS customer_jobs (
+        id TEXT PRIMARY KEY,
+        customer_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        rubric_json JSONB NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT now()
+      );
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS customer_jobs_customer_idx
+      ON customer_jobs(customer_id);
+    `);
+    // ============================
+    // Signed Resume Viewing: persist requestId for /r/:requestId lookups
+    // ============================
+    try {
+      await pool.query(`ALTER TABLE inbound_docs ADD COLUMN IF NOT EXISTS request_id TEXT;`);
+      await pool.query(`CREATE INDEX IF NOT EXISTS inbound_docs_request_id_idx ON inbound_docs(request_id);`);
+      devLog("✅ DB inbound_docs.request_id ensured");
+    } catch (e: any) {
+      console.warn("⚠️ DB alter inbound_docs.request_id failed (continuing):", e?.message || e);
+    }
 
     console.log("✅ DB tables ensured");
   } catch (e: any) {
@@ -310,60 +469,150 @@ async function ensureDbTables() {
 }
 void ensureDbTables();
 
+// ✅ SINGLE definition (fixed)
 async function upsertCustomerRubric(customerId: string, rubric: any) {
-  if (!customerId) throw new Error("missing_customerId");
-  await pool.query(
-    `
-    INSERT INTO customer_rubrics (customer_id, rubric_json, updated_at)
-    VALUES ($1, $2::jsonb, now())
-    ON CONFLICT (customer_id)
-    DO UPDATE SET rubric_json = EXCLUDED.rubric_json, updated_at = now()
-  `,
-    [customerId, JSON.stringify(rubric)]
-  );
-}
-async function getCustomerRubric(customerId: string): Promise<any | null> {
-  if (!customerId) return null;
+  if (!customerId) throw new AppError("missing_customerId", 400, "missing_customerId", true);
+  if (rubric == null) throw new AppError("missing_rubric", 400, "missing_rubric", true);
+  if (typeof rubric !== "object") throw new AppError("invalid_rubric", 400, "invalid_rubric", true);
+
   try {
-    const r = await pool.query(`SELECT rubric_json FROM customer_rubrics WHERE customer_id=$1`, [customerId]);
-    return r.rows?.[0]?.rubric_json ?? null;
-  } catch {
-    return null;
+    await pool.query(
+      `
+      INSERT INTO customer_rubrics (customer_id, rubric_json, updated_at)
+      VALUES ($1, $2::jsonb, now())
+      ON CONFLICT (customer_id)
+      DO UPDATE SET rubric_json = EXCLUDED.rubric_json, updated_at = now()
+      `,
+      [customerId, JSON.stringify(rubric)]
+    );
+  } catch (_e: any) {
+    // Central handler logs stack; client gets generic message in prod
+    throw new AppError("db_error_upserting_rubric", 500, "db_error", false);
   }
 }
 
+
+async function getCustomerRubric(customerId: string): Promise<any | null> {
+  if (!customerId) return null;
+
+  try {
+    const r = await pool.query(`SELECT rubric_json FROM customer_rubrics WHERE customer_id=$1`, [customerId]);
+    return r.rows?.[0]?.rubric_json ?? null;
+  } catch (e: any) {
+    // Read failures are non-fatal in your flow; keep returning null
+    console.warn("⚠️ getCustomerRubric failed (returning null):", e?.message || e);
+    return null;
+  }
+}
+// ============================
+// JOB MODEL (multi-role hiring)
+// ============================
+
+type CustomerJob = {
+  id: string;
+  customerId: string;
+  title: string;
+  rubric: any;
+  createdAt: string;
+};
+
+function generateJobId(customerId: string) {
+  return `job_${customerId}_${crypto.randomBytes(6).toString("hex")}`;
+}
+
+async function createCustomerJob(customerId: string, title: string, rubric: any) {
+  if (!customerId) throw new AppError("missing_customerId", 400, "missing_customerId", true);
+  if (!title) throw new AppError("missing_title", 400, "missing_title", true);
+  if (!rubric || typeof rubric !== "object")
+    throw new AppError("invalid_rubric", 400, "invalid_rubric", true);
+
+  const id = generateJobId(customerId);
+
+  await pool.query(
+    `INSERT INTO customer_jobs (id, customer_id, title, rubric_json)
+     VALUES ($1,$2,$3,$4::jsonb)`,
+    [id, customerId, title, JSON.stringify(rubric)]
+  );
+
+  return { id, customerId, title, rubric, createdAt: new Date().toISOString() };
+}
+
+async function listCustomerJobs(customerId: string): Promise<CustomerJob[]> {
+  const r = await pool.query(
+    `SELECT id, customer_id, title, rubric_json, created_at
+     FROM customer_jobs
+     WHERE customer_id=$1
+     ORDER BY created_at ASC`,
+    [customerId]
+  );
+
+  return r.rows.map((row: any) => ({
+    id: row.id,
+    customerId: row.customer_id,
+    title: row.title,
+    rubric: row.rubric_json,
+    createdAt: row.created_at,
+  }));
+}
+
+async function deleteCustomerJob(customerId: string, jobId: string) {
+  await pool.query(
+    `DELETE FROM customer_jobs WHERE customer_id=$1 AND id=$2`,
+    [customerId, jobId]
+  );
+}
 async function saveInboundDocToDb(args: {
   source: string;
+  requestId?: string;
   toEmail?: string;
   customerId?: string;
   resolvedCustomerId?: string;
   matchFound: boolean;
   billingStatus?: string;
   blockedReason?: string;
-
   filename?: string;
   r2Bucket?: string;
   r2Key?: string;
   docType?: string;
   extractedChars?: number;
   textPreview?: string;
-
   aiScore?: number | null;
   aiJson?: any;
 }) {
   try {
-    await pool.query(
+    devLog("DB_INBOUND_INSERT", {
+      requestId: safeStr((args as any).requestId),
+      source: safeStr(args.source),
+      r2Key: safeStr(args.r2Key),
+    });
+
+        await pool.query(
       `
       INSERT INTO inbound_docs (
-        source, to_email, customer_id, resolved_customer_id, match_found,
-        billing_status, blocked_reason,
-        filename, r2_bucket, r2_key, doc_type, extracted_chars, text_preview,
-        ai_score, ai_json
+        source,
+        request_id,
+        to_email,
+        customer_id,
+        resolved_customer_id,
+        match_found,
+        billing_status,
+        blocked_reason,
+        filename,
+        r2_bucket,
+        r2_key,
+        doc_type,
+        extracted_chars,
+        text_preview,
+        ai_score,
+        ai_json
       )
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb)
-    `,
+      VALUES (
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb
+      )
+      `,
       [
         safeStr(args.source) || "unknown",
+        safeStr(args.requestId) || null,
         safeStr(args.toEmail) || null,
         safeStr(args.customerId) || null,
         safeStr(args.resolvedCustomerId) || null,
@@ -462,7 +711,6 @@ async function sendCustomerText(to: string, subject: string, text: string) {
     svc.sendEmailText,
     svc.sendEmail,
     svc.sendCustomerEmail,
-    svc.sendCustomerTextEmail,
     svc.sendCustomerTextEmail,
   ].filter((fn: any) => typeof fn === "function");
 
@@ -781,7 +1029,6 @@ async function extractTextFromBuffer(filename: string, buf: Buffer): Promise<str
     }
 
     if (nameLower.endsWith(".docx")) {
-      // Optional dependency: npm i mammoth
       try {
         // eslint-disable-next-line @typescript-eslint/no-var-requires
         const mammoth = require("mammoth");
@@ -808,9 +1055,27 @@ async function extractTextFromBuffer(filename: string, buf: Buffer): Promise<str
 function classifyDocTypeFromText(textRaw: string): "RESUME" | "NON_RESUME" {
   const text = (textRaw || "").toLowerCase();
 
-  // quick sanity
+ // quick sanity (allow short but obvious resumes)
   const letters = (text.match(/[a-z]/g) || []).length;
-  if (letters < 80) return "NON_RESUME";
+
+  // If the text is short, only treat as resume when it has strong resume markers.
+  if (letters < 80) {
+    const shortResumeMarkers = [
+      "work experience",
+      "years experience",
+      "professional summary",
+      "education",
+      "skills",
+      "certifications",
+      "certification",
+      "linkedin",
+      "curriculum vitae",
+      "resume",
+    ];
+
+    const hasMarker = shortResumeMarkers.some((k) => text.includes(k));
+    if (!hasMarker) return "NON_RESUME";
+  }
 
   const hasAny = (keys: string[]) => keys.some((k) => text.includes(k));
   const countAny = (keys: string[]) => keys.reduce((n, k) => (text.includes(k) ? n + 1 : n), 0);
@@ -877,7 +1142,7 @@ function classifyDocTypeFromText(textRaw: string): "RESUME" | "NON_RESUME" {
 function buildR2PublicUrl(r2Key: string) {
   // Hardening Step 3: only generate public URLs if explicitly enabled
   if (!R2_PUBLIC_LINKS) return "";
-  if (!R2_PUBLIC_BASE_URL) return ""; // ✅ extra safety switch
+  if (!R2_PUBLIC_BASE_URL) return ""; // extra safety switch
   if (!r2Key) return "";
 
   return `${R2_PUBLIC_BASE_URL}/${encodeURIComponent(r2Key).replace(/%2F/g, "/")}`;
@@ -1090,7 +1355,7 @@ async function tallyApply(
       requestBody: { values: [[fileCell || url]] },
     });
 
-    // G = idempotency tokens csv (store stable hash + optional r2 key)
+    // G = idempotency tokens csv
     const existingG = await sheets.spreadsheets.values.get({
       spreadsheetId: tallySheetId,
       range: `G${rowNumber}`,
@@ -1105,8 +1370,8 @@ async function tallyApply(
       : [];
 
     const wanted: string[] = [];
-    if (docToken) wanted.push(docToken); // ✅ stable: hash:...
-    if (r2Key) wanted.push(`r2:${r2Key}`); // optional: keep trace of r2 keys too
+    if (docToken) wanted.push(docToken); // stable: hash:...
+    if (r2Key) wanted.push(`r2:${r2Key}`); // optional trace
 
     for (const w of wanted) {
       if (!tokens.includes(w)) tokens.push(w);
@@ -1134,10 +1399,398 @@ async function tallyApply(
 
   return { today, nextCount, nextNotes, shouldIncrement };
 }
+// ============================
+// Resumes Tab Helpers (Sheet must have all resumes)
+// ============================
+// ============================
+// Job-Section Sheet Engine (vertical left layout)
+// ============================
 
+// Visual markers in the sheet so we can reliably find sections
+const JOB_HEADER_PREFIX = "JOB:";
+
+// Columns for the resume rows (kept consistent everywhere)
+const RESUME_COL_HEADERS = [
+  "receivedAt",
+  "source",
+  "filename",
+  "score",
+  "summary",
+  "r2Key",
+  "resumeLink",
+  "requestId",
+];
+
+async function getSheetIdByTitle(spreadsheetId: string, title: string): Promise<number | null> {
+  const sheets = google.sheets({ version: "v4", auth: oauth2Client });
+  const meta = await sheets.spreadsheets.get({ spreadsheetId });
+  const found = meta.data.sheets?.find((s: any) => safeStr(s?.properties?.title) === title);
+  const id = found?.properties?.sheetId;
+  return Number.isFinite(id) ? Number(id) : null;
+}
+
+async function readResumesTabValues(spreadsheetId: string): Promise<string[][]> {
+  const sheets = google.sheets({ version: "v4", auth: oauth2Client });
+  const TAB = "Resumes";
+
+  const resp = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: `${TAB}!A1:H5000`,
+  });
+
+  const vals = (resp.data.values || []) as any[];
+  return vals.map((r) => (Array.isArray(r) ? r.map((c) => safeStr(c)) : []));
+}
+
+function jobHeaderCell(jobTitle: string) {
+  return `${JOB_HEADER_PREFIX} ${safeStr(jobTitle)}`.trim();
+}
+
+function isJobHeaderRow(row: string[]) {
+  const a = safeStr(row?.[0]);
+  return a.startsWith(JOB_HEADER_PREFIX);
+}
+
+function findJobSectionStart(values: string[][], jobTitle: string): number {
+  const want = jobHeaderCell(jobTitle);
+  for (let i = 0; i < values.length; i++) {
+    if (safeStr(values[i]?.[0]) === want) return i; // 0-based
+  }
+  return -1;
+}
+
+function findJobSectionEnd(values: string[][], start0: number): number {
+  // end is the first next job header OR end of sheet
+  for (let i = start0 + 1; i < values.length; i++) {
+    if (isJobHeaderRow(values[i])) return i; // 0-based start of next section
+  }
+  return values.length; // end of sheet
+}
+
+function isBlankRow(row: string[]) {
+  return row.every((c) => !safeStr(c));
+}
+
+async function appendJobSectionAtBottom(spreadsheetId: string, jobTitle: string) {
+  const sheets = google.sheets({ version: "v4", auth: oauth2Client });
+  const TAB = "Resumes";
+
+  // If sheet already has content, add a blank spacer row before a new section
+  const existing = await readResumesTabValues(spreadsheetId);
+  const hasAny = existing.some((r) => r.some((c) => safeStr(c)));
+
+  const sectionRows: any[] = [];
+
+  if (hasAny) sectionRows.push(["", "", "", "", "", "", "", ""]); // spacer
+
+  sectionRows.push([jobHeaderCell(jobTitle), "", "", "", "", "", "", ""]); // job header row
+  sectionRows.push([...RESUME_COL_HEADERS]); // column headers row
+
+  await sheets.spreadsheets.values.append({
+    spreadsheetId,
+    range: `${TAB}!A:H`,
+    valueInputOption: "RAW",
+    insertDataOption: "INSERT_ROWS",
+    requestBody: { values: sectionRows },
+  });
+}
+
+async function ensureJobSectionExists(spreadsheetId: string, jobTitle: string): Promise<void> {
+  await ensureResumesTab(spreadsheetId);
+
+  const values = await readResumesTabValues(spreadsheetId);
+  const start0 = findJobSectionStart(values, jobTitle);
+  if (start0 !== -1) return;
+
+  await appendJobSectionAtBottom(spreadsheetId, jobTitle);
+  devLog("✅ JOB_SECTION_CREATED:", spreadsheetId, jobTitle);
+}
+
+async function appendResumeUnderJobSection(args: {
+  spreadsheetId: string;
+  jobTitle: string;
+  row: {
+    receivedAt: string;
+    source: string;
+    filename: string;
+    score: number | null;
+    summary: string;
+    r2Key: string;
+    resumeLink?: string;
+    requestId: string;
+  };
+}) {
+  const sheets = google.sheets({ version: "v4", auth: oauth2Client });
+  const TAB = "Resumes";
+
+  await ensureJobSectionExists(args.spreadsheetId, args.jobTitle);
+
+  const values = await readResumesTabValues(args.spreadsheetId);
+  const start0 = findJobSectionStart(values, args.jobTitle);
+
+  // Safety: if still not found, just append at bottom (should not happen)
+  if (start0 === -1) {
+    await appendResumeRow(args.spreadsheetId, args.row);
+    return;
+  }
+
+  const nextSectionStart0 = findJobSectionEnd(values, start0);
+
+  // We want to insert AFTER:
+  // start0 = job header
+  // start0+1 = column headers
+  // then existing resumes until blank row or next job header
+  let insertAt0 = Math.min(start0 + 2, values.length);
+
+  for (let i = start0 + 2; i < nextSectionStart0; i++) {
+    const r = values[i] || [];
+    // stop at blank spacer row (keeps sections separated cleanly)
+    if (isBlankRow(r)) {
+      insertAt0 = i;
+      break;
+    }
+    insertAt0 = i + 1;
+  }
+
+  const sheetId = await getSheetIdByTitle(args.spreadsheetId, TAB);
+
+  // If we can't resolve sheetId, fall back to values.append at bottom (safe)
+  if (sheetId == null) {
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: args.spreadsheetId,
+      range: `${TAB}!A:H`,
+      valueInputOption: "RAW",
+      insertDataOption: "INSERT_ROWS",
+      requestBody: {
+        values: [[
+          args.row.receivedAt,
+          args.row.source,
+          args.row.filename,
+          args.row.score ?? "",
+          args.row.summary || "",
+          args.row.r2Key || "",
+          args.row.resumeLink || "",
+          args.row.requestId || "",
+        ]],
+      },
+    });
+    return;
+  }
+
+  // Insert a blank row at insertAt0 (0-based) to keep section intact
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: args.spreadsheetId,
+    requestBody: {
+      requests: [
+        {
+          insertDimension: {
+            range: {
+              sheetId,
+              dimension: "ROWS",
+              startIndex: insertAt0,      // 0-based, insert BEFORE this row
+              endIndex: insertAt0 + 1,
+            },
+            inheritFromBefore: true,
+          },
+        },
+      ],
+    },
+  });
+
+  // Write the resume row into that inserted row
+  const rowNumber = insertAt0 + 1; // 1-based for A1 notation
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: args.spreadsheetId,
+    range: `${TAB}!A${rowNumber}:H${rowNumber}`,
+    valueInputOption: "RAW",
+    requestBody: {
+      values: [[
+        args.row.receivedAt,
+        args.row.source,
+        args.row.filename,
+        args.row.score ?? "",
+        args.row.summary || "",
+        args.row.r2Key || "",
+        args.row.resumeLink || "",
+        args.row.requestId || "",
+      ]],
+    },
+  });
+
+  devLog("🧩 RESUME_APPENDED_UNDER_JOB:", args.spreadsheetId, args.jobTitle, { rowNumber });
+}
+async function ensureSheetTabExists(spreadsheetId: string, title: string) {
+  const sheets = google.sheets({ version: "v4", auth: oauth2Client });
+
+  const meta = await sheets.spreadsheets.get({ spreadsheetId });
+  const existing = meta.data.sheets?.map((s: any) => s.properties?.title) || [];
+
+  if (existing.includes(title)) return;
+
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId,
+    requestBody: {
+      requests: [
+        {
+          addSheet: {
+            properties: { title },
+          },
+        },
+      ],
+    },
+  });
+
+   devLog("✅ SHEET_TAB_CREATED:", spreadsheetId, title);
+}
+
+async function ensureResumesTab(spreadsheetId: string) {
+  const sheets = google.sheets({ version: "v4", auth: oauth2Client });
+
+  const TAB = "Resumes";
+
+  await ensureSheetTabExists(spreadsheetId, TAB);
+
+  const headerResp = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: `${TAB}!A1:H1`,
+  });
+
+  const existing = headerResp.data.values?.[0] || [];
+
+  if (existing.length > 0) return;
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range: `${TAB}!A1:H1`,
+    valueInputOption: "RAW",
+    requestBody: {
+      values: [[
+        "receivedAt",
+        "source",
+        "filename",
+        "score",
+        "summary",
+        "r2Key",
+        "resumeLink",
+        "requestId"
+      ]],
+    },
+  });
+
+  devLog("✅ RESUMES_TAB_INITIALIZED:", spreadsheetId);
+}
+// ============================
+// General Submissions Tab Helpers (NEW)
+// ============================
+
+async function ensureGeneralSubmissionsTab(spreadsheetId: string) {
+  const sheets = google.sheets({ version: "v4", auth: oauth2Client });
+  const TAB = "General Submissions";
+
+  await ensureSheetTabExists(spreadsheetId, TAB);
+
+  const headerResp = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: `${TAB}!A1:G1`,
+  });
+
+  const existing = headerResp.data.values?.[0] || [];
+  if (existing.length > 0) return;
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range: `${TAB}!A1:G1`,
+    valueInputOption: "RAW",
+    requestBody: {
+      values: [[
+        "receivedAt",
+        "source",
+        "filename",
+        "reason",
+        "r2Key",
+        "resumeLink",
+        "requestId",
+      ]],
+    },
+  });
+
+  devLog("✅ GENERAL_SUBMISSIONS_TAB_INITIALIZED:", spreadsheetId);
+}
+
+async function appendGeneralSubmissionRow(spreadsheetId: string, row: {
+  receivedAt: string;
+  source: string;
+  filename: string;
+  reason: string;
+  r2Key: string;
+  resumeLink?: string;
+  requestId: string;
+}) {
+  const sheets = google.sheets({ version: "v4", auth: oauth2Client });
+  const TAB = "General Submissions";
+
+  await ensureGeneralSubmissionsTab(spreadsheetId);
+
+  await sheets.spreadsheets.values.append({
+    spreadsheetId,
+    range: `${TAB}!A:G`,
+    valueInputOption: "RAW",
+    insertDataOption: "INSERT_ROWS",
+    requestBody: {
+      values: [[
+        row.receivedAt,
+        row.source,
+        row.filename,
+        row.reason || "",
+        row.r2Key || "",
+        row.resumeLink || "",
+        row.requestId || "",
+      ]],
+    },
+  });
+
+  devLog("📝 GENERAL_SUBMISSION_ROW_APPENDED:", spreadsheetId, row.requestId);
+}
+async function appendResumeRow(spreadsheetId: string, row: {
+  receivedAt: string;
+  source: string;
+  filename: string;
+  score: number | null;
+  summary: string;
+  r2Key: string;
+  resumeLink?: string;
+  requestId: string;
+}) {
+  const sheets = google.sheets({ version: "v4", auth: oauth2Client });
+  const TAB = "Resumes";
+
+  await sheets.spreadsheets.values.append({
+    spreadsheetId,
+    range: `${TAB}!A:H`,
+    valueInputOption: "RAW",
+    insertDataOption: "INSERT_ROWS",
+    requestBody: {
+      values: [[
+        row.receivedAt,
+        row.source,
+        row.filename,
+        row.score ?? "",
+        row.summary || "",
+        row.r2Key || "",
+        row.resumeLink || "",
+        row.requestId || "",
+      ]],
+    },
+  });
+
+  devLog("📝 RESUME_ROW_APPENDED:", spreadsheetId, row.r2Key);
+}
+
+ 
 // ============================
 // Tally sheet creation
 // ============================
+  
 async function createTallySheetForCustomer(companyName: string, customerId: string) {
   const drive = google.drive({ version: "v3", auth: oauth2Client });
   const sheets = google.sheets({ version: "v4", auth: oauth2Client });
@@ -1170,13 +1823,22 @@ async function createTallySheetForCustomer(companyName: string, customerId: stri
     },
   });
 
-  // Share with admin + current authed account (best effort)
+    // Share with admin + current authed account (best effort)
   if (ADMIN_EMAIL) await ensureSheetSharedOnce(spreadsheetId, ADMIN_EMAIL);
   const authedEmail = await logAuthedGoogleEmailFromTokens();
   if (authedEmail) await ensureSheetSharedOnce(spreadsheetId, authedEmail);
 
+  // ✅ Sheet must have all resumes: ensure Resumes tab exists + headers
+  try {
+    await ensureResumesTab(spreadsheetId);
+    await ensureJobSectionExists(spreadsheetId, "Unsorted");
+    await ensureGeneralSubmissionsTab(spreadsheetId);
+  } catch (e: any) {
+    console.warn("⚠️ ENSURE_SHEET_TABS_FAILED (continuing):", e?.message || e);
+  }
+
   return { spreadsheetId, spreadsheetUrl: webViewLink };
-}
+  }
 
 // ============================
 // AI scoring wrapper
@@ -1185,10 +1847,8 @@ async function safeScoreResume(text: string, rubric: any | null) {
   const fn: any = scoreResume as any;
   if (typeof fn !== "function") throw new Error("scoreResume_not_a_function");
 
-  // If your scoreResume supports rubric as 2nd arg, pass it
   if (fn.length >= 2) return await fn(text, rubric);
 
-  // Otherwise merge rubric into the prompt text
   if (rubric) {
     const rubricBlock = typeof rubric === "string" ? rubric : JSON.stringify(rubric, null, 2);
     const merged = `RUBRIC (customer scoring criteria):\n${rubricBlock}\n\n${text}`;
@@ -1196,6 +1856,75 @@ async function safeScoreResume(text: string, rubric: any | null) {
   }
 
   return await fn(text);
+}
+
+
+// ============================
+// AI JOB CLASSIFIER
+// ============================
+
+// ✅ Single source of truth (define ONCE in entire file)
+const JOB_MATCH_CONFIDENCE_THRESHOLD = 0.65;
+
+// ✅ Classifies a resume to the best matching job (or null) using your existing OpenAI wrapper
+async function classifyResumeToJob(
+  resumeText: string,
+  jobs: CustomerJob[]
+): Promise<{ matchedJobId: string | null; confidence: number }> {
+  if (!Array.isArray(jobs) || jobs.length === 0) return { matchedJobId: null, confidence: 0 };
+
+  const jobPayload = jobs.map((j) => ({
+    id: safeStr(j?.id),
+    title: safeStr(j?.title),
+    rubric: (j as any)?.rubric ?? null,
+  }));
+
+  // Keep prompt deterministic + short enough
+  const prompt = `
+You are an AI hiring classifier.
+
+Given a resume and a list of job definitions,
+determine which job this resume best matches.
+
+Return STRICT JSON ONLY in this format:
+
+{
+  "matchedJobId": "job_id_here_or_null",
+  "confidence": 0-1
+}
+
+Rules:
+- If no strong match exists, return matchedJobId=null.
+- Confidence must be a number between 0 and 1.
+
+JOBS:
+${JSON.stringify(jobPayload, null, 2)}
+
+RESUME:
+${safeStr(resumeText).slice(0, 5000)}
+`;
+
+  try {
+    // ✅ Use existing wrapper for consistency (same model/settings as scoring)
+    const result: any = await safeScoreResume(prompt, null);
+
+    // Sometimes wrappers return objects; sometimes strings
+    const parsed = typeof result === "string" ? tryJsonParse<any>(result) : result;
+
+    const matchedJobId = safeStr(parsed?.matchedJobId) || null;
+
+    const confRaw = Number(parsed?.confidence);
+    const confidence = Number.isFinite(confRaw) ? Math.min(Math.max(confRaw, 0), 1) : 0;
+
+    // If matchedJobId doesn't exist in the provided list, treat as no match
+    if (matchedJobId && !jobs.some((j) => safeStr(j?.id) === matchedJobId)) {
+      return { matchedJobId: null, confidence: 0 };
+    }
+
+    return { matchedJobId, confidence };
+  } catch {
+    return { matchedJobId: null, confidence: 0 };
+  }
 }
 
 // ============================
@@ -1225,6 +1954,7 @@ type InboundDocResult = {
 };
 
 async function processInboundDoc(args: {
+  requestId: string;
   source: "resend" | "inbound-file" | "inbound-r2";
   filename: string;
   buffer: Buffer;
@@ -1242,13 +1972,28 @@ async function processInboundDoc(args: {
   const extractedTooLarge = extractedTextRaw.length > MAX_EXTRACTED_CHARS;
   const extractedText = extractedTooLarge ? extractedTextRaw.slice(0, MAX_EXTRACTED_CHARS) : extractedTextRaw;
 
+  logInfo("PROCESS_INBOUND_START", {
+    requestId: args.requestId,
+    source: args.source,
+    filename: args.filename,
+    r2Key: args.r2?.key,
+  });
+
+  if (extractedTooLarge) {
+    logWarn("EXTRACT_TOO_LARGE", {
+      requestId: args.requestId,
+      filename: args.filename,
+      extractedChars: extractedTextRaw.length,
+      max: MAX_EXTRACTED_CHARS,
+    });
+  }
+
   const docType: "RESUME" | "NON_RESUME" =
     args.docType || (extractedText.trim().length > 0 ? classifyDocTypeFromText(extractedText) : "NON_RESUME");
 
   const toEmail = safeStr(args.toEmail).trim().toLowerCase();
   const filenameForEmail = safeStr(args.filename);
   const r2KeyForEmail = safeStr(args?.r2?.key || "");
-
   let resolvedCustomerId = "";
   let customerId = "";
   let match: CustomerRow | null = null;
@@ -1294,7 +2039,7 @@ async function processInboundDoc(args: {
         const tallySheetId = safeStr(match?.tallySheetId);
         const today = formatISO(toZonedTime(new Date(), TIMEZONE), { representation: "date" });
 
-        // Stable idempotency token (same resume resent => same hash)
+        // Stable idempotency token
         const docHash = sha256Hex(args.buffer);
         const docToken = `hash:${docHash}`;
 
@@ -1305,7 +2050,6 @@ async function processInboundDoc(args: {
           if (tallySheetId && customerId && docToken) {
             const sheets = google.sheets({ version: "v4", auth: oauth2Client });
 
-            // ensure row exists (and share the sheet)
             const { rowIndex0 } = await ensureTodayTallyRow(tallySheetId, today, customerId);
             const rowNumber = rowIndex0 + 2;
 
@@ -1324,7 +2068,6 @@ async function processInboundDoc(args: {
               : false;
           }
         } catch (e: any) {
-          // If idempotency check fails, do NOT block scoring — just proceed
           console.warn("⚠️ AI_IDEMPOTENCY_CHECK_FAILED:", e?.message || e);
           alreadyProcessedToday = false;
         }
@@ -1361,7 +2104,6 @@ async function processInboundDoc(args: {
     if (blocked) {
       tallyResult = { skipped: true, reason: "billing_block", billingStatus, blockedReason };
     } else if (shouldSkipTally) {
-      // ✅ duplicate today → skip all Sheets writes
       const today = formatISO(toZonedTime(new Date(), TIMEZONE), { representation: "date" });
       tallyResult = { skipped: true, reason: "idempotent_skip", today, shouldIncrement: false };
       console.log("🧷 TALLY_SKIP_DUPLICATE:", customerId, today, docToken);
@@ -1369,12 +2111,28 @@ async function processInboundDoc(args: {
       tallyResult = await tallyApply(sheetId, customerId, docType, args.source, r2Key || undefined, docToken, ai);
 
       if ((tallyResult as any)?.shouldIncrement === false) {
-        console.log("🧷 TALLY_APPLY_SKIP_OK:", customerId, tallyResult?.today, tallyResult?.nextCount);
+        logInfo("TALLY_APPLY_SKIP_OK", {
+          requestId: args.requestId,
+          customerId,
+          date: tallyResult?.today,
+          nextCount: tallyResult?.nextCount,
+          shouldIncrement: false,
+        });
       } else {
-        console.log("✅ TALLY_APPLY_OK:", customerId, tallyResult?.today, tallyResult?.nextCount);
+        logInfo("TALLY_APPLY_OK", {
+          requestId: args.requestId,
+          customerId,
+          date: tallyResult?.today,
+          nextCount: tallyResult?.nextCount,
+          shouldIncrement: true,
+        });
       }
     } else {
-      console.warn("⚠️ TALLY_SKIP: missing sheetId or customerId", { customerId, sheetId });
+      logWarn("TALLY_SKIP_MISSING_IDS", {
+        requestId: args.requestId,
+        customerId,
+        sheetId,
+      });
     }
   } catch (e: any) {
     const status = e?.response?.status || e?.code || null;
@@ -1389,36 +2147,131 @@ async function processInboundDoc(args: {
 
   const aiScoreNum = Number(ai?.score);
   await saveInboundDocToDb({
-    source: args.source,
-    toEmail,
-    customerId: customerId || undefined,
-    resolvedCustomerId: resolvedCustomerId || undefined,
-    matchFound: !!match,
-    billingStatus: billingStatus || undefined,
-    blockedReason: blockedReason || undefined,
-    filename: args.filename,
-    r2Bucket: args.r2?.bucket,
-    r2Key: args.r2?.key,
-    docType,
-    extractedChars: extractedText?.length || 0,
-    textPreview,
-    aiScore: Number.isFinite(aiScoreNum) ? aiScoreNum : null,
-    aiJson: ai,
-  });
-
-  // Result email (best-effort) — STRICT idempotency gate (only email when tally increments)
+  source: args.source,
+  requestId: args.requestId, // 🔐 required for /r/:requestId
+  toEmail,
+  customerId: customerId || undefined,
+  resolvedCustomerId: resolvedCustomerId || undefined,
+  matchFound: !!match,
+  billingStatus: billingStatus || undefined,
+  blockedReason: blockedReason || undefined,
+  filename: args.filename,
+  r2Bucket: args.r2?.bucket,
+  r2Key: args.r2?.key,
+  docType,
+  extractedChars: extractedText?.length || 0,
+  textPreview,
+  aiScore: Number.isFinite(aiScoreNum) ? aiScoreNum : null,
+  aiJson: ai,
+});
+   // Result email (best-effort) — STRICT idempotency gate (only email when tally increments)
   try {
     const didIncrement = (tallyResult as any)?.shouldIncrement === true;
+
+    // ✅ Sheet must have all resumes: append row ONLY when tally increments
+    try {
+      const sheetId = safeStr(match?.tallySheetId);
+      const isResumeDoc = docType === "RESUME";
+      const r2Key = safeStr(args?.r2?.key || "");
+      const resumeLink = `${APP_URL}/r/${args.requestId}`;
+
+      if (didIncrement && sheetId && customerId && isResumeDoc) {
+        const scoreNum = Number(ai?.score);
+        const score = Number.isFinite(scoreNum) ? scoreNum : null;
+
+        const summary =
+          safeStr(ai?.summary) ||
+          safeStr(ai?.notes) ||
+          safeStr(ai?.feedback) ||
+          safeStr(ai?.reason) ||
+          "";
+
+        const aiSkippedLocal = !!ai?.skipped;
+        const aiErrorLocal = !!ai?.error;
+        const passedAiCriteria = !aiSkippedLocal && !aiErrorLocal;
+
+        // Always ensure baseline sheet + sections exist (one sheet, left-side sections)
+        await ensureResumesTab(sheetId);
+        await ensureJobSectionExists(sheetId, "Unsorted");
+        await ensureJobSectionExists(sheetId, "General Submissions");
+
+        if (passedAiCriteria) {
+          // ✅ PASS → route to Resumes section (job section / Unsorted)
+          const jobs = await listCustomerJobs(customerId);
+
+          const { matchedJobId, confidence } = await classifyResumeToJob(extractedText, jobs);
+
+          let jobTitle = "Unsorted";
+          if (matchedJobId && confidence >= JOB_MATCH_CONFIDENCE_THRESHOLD) {
+            const j = jobs.find((x) => safeStr(x.id) === matchedJobId);
+            if (j?.title) jobTitle = safeStr(j.title);
+          }
+
+          await appendResumeUnderJobSection({
+            spreadsheetId: sheetId,
+            jobTitle,
+            row: {
+              receivedAt: new Date().toISOString(),
+              source: args.source,
+              filename: safeStr(args.filename),
+              score,
+              summary: summary.slice(0, 2000),
+              r2Key,
+              resumeLink,
+              requestId: args.requestId,
+            },
+          });
+
+          devLog("🧠 JOB_MATCH_DECISION:", {
+            requestId: args.requestId,
+            customerId,
+            matchedJobId,
+            confidence,
+            jobTitle,
+          });
+        } else {
+          // 🔵 FAIL AI criteria → route to "General Submissions" section (same sheet, same schema)
+          const reasonText = aiErrorLocal
+            ? "ai_error"
+            : `ai_skipped:${safeStr(ai?.reason) || "unknown"}`;
+
+          await appendResumeUnderJobSection({
+            spreadsheetId: sheetId,
+            jobTitle: "General Submissions",
+            row: {
+              receivedAt: new Date().toISOString(),
+              source: args.source,
+              filename: safeStr(args.filename),
+              score: null, // ✅ no score for General Submissions
+              summary: reasonText.slice(0, 2000), // ✅ store why it went here
+              r2Key,
+              resumeLink,
+              requestId: args.requestId,
+            },
+          });
+
+          devLog("🧾 ROUTED_GENERAL_SUBMISSION:", {
+            requestId: args.requestId,
+            customerId,
+            reason: aiErrorLocal ? "ai_error" : safeStr(ai?.reason),
+          });
+        }
+      }
+    } catch (e: any) {
+      console.warn("⚠️ APPEND_RESUME_ROW_FAILED (continuing):", e?.message || e);
+    }
 
     const hasToEmail = !!toEmail;
     const matchFound = !!match;
     const isResume = docType === "RESUME";
+
     const aiSkipped = !!ai?.skipped;
     const aiError = !!ai?.error;
 
-    // ✅ HARD GATE: never email if we didn't increment tally
+    // HARD GATE: never email if we didn't increment tally
     if (!didIncrement) {
-      console.log("📧 RESULT_EMAIL_SKIP:", {
+      devLog("📧 RESULT_EMAIL_SKIP:", {
+        requestId: args.requestId,
         hasToEmail,
         matchFound,
         blocked,
@@ -1428,6 +2281,7 @@ async function processInboundDoc(args: {
         tallyIncremented: didIncrement,
         reason: "idempotent_skip_no_increment",
       });
+
       return {
         ok: true,
         source: args.source,
@@ -1452,16 +2306,14 @@ async function processInboundDoc(args: {
       };
     }
 
-    // Toggle: send a receipt email even if AI skipped (prevents ghosting)
     const SEND_RECEIPT_IF_AI_SKIPPED = true;
 
-    // Eligible for scored email only if AI ran successfully
-    const scoredEligible = hasToEmail && matchFound && !blocked && isResume && !aiSkipped && !aiError;
+    const scoredEligible =
+      hasToEmail && matchFound && !blocked && isResume && !aiSkipped && !aiError;
 
-    // Eligible for receipt if resume + matched + not blocked (and toggle enabled)
-    const receiptEligible = hasToEmail && matchFound && !blocked && isResume && SEND_RECEIPT_IF_AI_SKIPPED;
+    const receiptEligible =
+      hasToEmail && matchFound && !blocked && isResume && SEND_RECEIPT_IF_AI_SKIPPED;
 
-    // If neither, skip and RETURN
     if (!scoredEligible && !receiptEligible) {
       const reason =
         !hasToEmail
@@ -1476,7 +2328,8 @@ async function processInboundDoc(args: {
           ? "ai_error"
           : "ai_skipped_and_receipt_disabled";
 
-      console.log("📧 RESULT_EMAIL_SKIP:", {
+      devLog("📧 RESULT_EMAIL_SKIP:", {
+        requestId: args.requestId,
         hasToEmail,
         matchFound,
         blocked,
@@ -1512,16 +2365,17 @@ async function processInboundDoc(args: {
     }
 
     const score = typeof ai?.score !== "undefined" ? String(ai.score) : "N/A";
-
-    const summary =
-      safeStr(ai?.summary) || safeStr(ai?.notes) || safeStr(ai?.feedback) || safeStr(ai?.reason) || "";
+    const summary2 =
+      safeStr(ai?.summary) ||
+      safeStr(ai?.notes) ||
+      safeStr(ai?.feedback) ||
+      safeStr(ai?.reason) ||
+      "";
 
     const strengths = Array.isArray(ai?.strengths) ? ai.strengths.slice(0, 4) : [];
     const weaknesses = Array.isArray(ai?.weaknesses) ? ai.weaknesses.slice(0, 4) : [];
 
-    // If AI didn't run, send receipt; else send scored result
     const isReceipt = !scoredEligible;
-
     const subject = isReceipt ? "Resume received" : `Resume Score: ${score}/100`;
 
     let text: string;
@@ -1543,8 +2397,8 @@ async function processInboundDoc(args: {
         ``,
         `Overall Score: ${score}/100`,
         ``,
-        summary ? `Summary:` : undefined,
-        summary ? summary : undefined,
+        summary2 ? `Summary:` : undefined,
+        summary2 ? summary2 : undefined,
         ``,
         strengths.length ? `Key Strengths:` : undefined,
         ...strengths.map((s: string) => `• ${s}`),
@@ -1561,7 +2415,6 @@ async function processInboundDoc(args: {
         .join("\n");
     }
 
-    // ✅ safer: use wrapper so you don't depend on a single function name/signature
     await sendCustomerText(toEmail!, subject, text);
 
     console.log(isReceipt ? "📧 RESULT_EMAIL_SENT_RECEIPT" : "📧 RESULT_EMAIL_SENT_SCORED", {
@@ -1598,17 +2451,73 @@ async function processInboundDoc(args: {
     ai,
     matchFound: !!match,
   };
-}
+} // <-- end processInboundDoc
 
 // ============================
 // Express app
 // ============================
 const app = express();
-app.use(cors());
+// ✅ Handle preflight quickly
+app.options(/.*/, cors());
+// --- Security headers ---
+app.use((req, res, next) => {
+  // ✅ Only set HSTS in production (only meaningful over HTTPS)
+  if (process.env.NODE_ENV === "production") {
+    res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains; preload");
+  }
 
-// ============================
-// Auth status (debug)
-// ============================
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "no-referrer");
+
+  // ✅ Explicitly restrict powerful browser features (tight default)
+  res.setHeader(
+    "Permissions-Policy",
+    "camera=(), microphone=(), geolocation=(), payment=(), usb=(), fullscreen=(), clipboard-read=(), clipboard-write=()"
+  );
+
+  res.setHeader("Cross-Origin-Resource-Policy", "same-site");
+  res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+  res.setHeader("Cross-Origin-Embedder-Policy", "require-corp");
+
+  next();
+});
+
+// --- Correlation IDs + minimal request logging ---
+app.use((req: Request, res: Response, next) => {
+  const incoming = safeStr(req.header("X-Request-Id"));
+  const requestId = incoming || genRequestId();
+  (req as any).requestId = requestId;
+  res.setHeader("X-Request-Id", requestId);
+
+  // Patch res.json to always include requestId when body is an object
+  const oldJson = res.json.bind(res);
+  (res as any).json = (body: any) => {
+    if (body && typeof body === "object" && !Array.isArray(body) && !("requestId" in body)) {
+      body.requestId = requestId;
+    }
+    return oldJson(body);
+  };
+
+  const start = Date.now();
+  res.on("finish", () => {
+    // keep logs clean: only log webhooks + admin + auth by default, unless DEBUG_REQUEST_LOGS
+    const p = safeStr(req.path || "");
+    const shouldLog =
+      truthyEnv("DEBUG_REQUEST_LOGS") || p.startsWith("/webhooks/") || p.startsWith("/admin/") || p.startsWith("/auth/");
+
+    if (!shouldLog) return;
+
+    const ms = Date.now() - start;
+    const status = res.statusCode;
+
+    // minimal structured-ish log
+    console.log(`[REQ] ${requestId} ${req.method} ${p} ${status} ${ms}ms ip=${safeStr(getClientIp(req))}`);
+  });
+
+  next();
+});
+
 app.get("/auth/status", (_req: Request, res: Response) => {
   const creds: any = oauth2Client.credentials || {};
   return res.json({
@@ -1698,263 +2607,264 @@ function pickResendTo(email: ResendReceivedEmail): string {
 // ============================
 // Resend inbound webhook (Svix VERIFIED) -> Cloud-only intake
 // ============================
-app.post("/webhooks/resend-inbound", express.raw({ type: "application/json" }), async (req: Request, res: Response) => {
-  try {
-    if (!RESEND_WEBHOOK_SECRET) return res.status(500).json({ ok: false, error: "missing_resend_webhook_secret" });
-    if (!RESEND_API_KEY) return res.status(500).json({ ok: false, error: "missing_resend_api_key" });
+app.post(
+  "/webhooks/resend-inbound",
+  rateLimit("resend_inbound"),
+  express.raw({ type: "application/json" }),
+  async (req: Request, res: Response, next: any) => {
+    try {
+      if (!RESEND_WEBHOOK_SECRET) return res.status(500).json({ ok: false, error: "missing_resend_webhook_secret" });
+      if (!RESEND_API_KEY) return res.status(500).json({ ok: false, error: "missing_resend_api_key" });
 
-    const svixId = String(req.headers["svix-id"] || "");
-    const svixTs = String(req.headers["svix-timestamp"] || "");
-    const svixSig = String(req.headers["svix-signature"] || "");
+      const svixId = String(req.headers["svix-id"] || "");
+      const svixTs = String(req.headers["svix-timestamp"] || "");
+      const svixSig = String(req.headers["svix-signature"] || "");
 
-    const payload = (req.body as Buffer).toString("utf8");
-    const wh = new Webhook(RESEND_WEBHOOK_SECRET);
-    const evt = wh.verify(payload, {
-      "svix-id": svixId,
-      "svix-timestamp": svixTs,
-      "svix-signature": svixSig,
-    }) as any;
-// ✅ DEV ONLY: allow forcing a fake attachment list for size-guard testing
-    // Set RESEND_DEV_FAKE_ATTACHMENTS=true to bypass Resend API calls (keeps Svix verification)
-    const RESEND_DEV_FAKE_ATTACHMENTS = truthyEnv("RESEND_DEV_FAKE_ATTACHMENTS");
+      const payload = (req.body as Buffer).toString("utf8");
+      const wh = new Webhook(RESEND_WEBHOOK_SECRET);
+      const evt = wh.verify(payload, {
+        "svix-id": svixId,
+        "svix-timestamp": svixTs,
+        "svix-signature": svixSig,
+      }) as any;
 
-    if (RESEND_DEV_FAKE_ATTACHMENTS) {
-      const fakeEmailId = safeStr((evt as any)?.data?.id) || "dev_fake_email";
-      const fakeSize = Number(process.env.RESEND_DEV_FAKE_SIZE || 5000);
+      // ✅ DEV ONLY: allow forcing a fake attachment list for size-guard testing
+      const RESEND_DEV_FAKE_ATTACHMENTS = truthyEnv("RESEND_DEV_FAKE_ATTACHMENTS");
 
-      const oversized =
-        fakeSize > MAX_ATTACHMENT_BYTES || fakeSize > MAX_TOTAL_ATTACH_BYTES
-          ? [{ id: "dev_fake", filename: "big-test.txt", size: fakeSize, reason: "attachment_too_large" }]
-          : [];
+      if (RESEND_DEV_FAKE_ATTACHMENTS) {
+        const fakeEmailId = safeStr((evt as any)?.data?.id) || "dev_fake_email";
+        const fakeSize = Number(process.env.RESEND_DEV_FAKE_SIZE || 5000);
 
-      if (oversized.length) {
-        return res.status(413).json({
-          ok: false,
-          error: "attachments_blocked_by_size_guard",
-          emailId: fakeEmailId,
-          oversized,
-        });
+        const oversized =
+          fakeSize > MAX_ATTACHMENT_BYTES || fakeSize > MAX_TOTAL_ATTACH_BYTES
+            ? [{ id: "dev_fake", filename: "big-test.txt", size: fakeSize, reason: "attachment_too_large" }]
+            : [];
+
+        if (oversized.length) {
+          return res.status(413).json({
+            ok: false,
+            error: "attachments_blocked_by_size_guard",
+            emailId: fakeEmailId,
+            oversized,
+          });
+        }
+
+        return res.json({ ok: true, emailId: fakeEmailId, devFake: true, allowed: true, size: fakeSize });
       }
 
-      return res.json({ ok: true, emailId: fakeEmailId, devFake: true, allowed: true, size: fakeSize });
-    }
-    // (line below) ✅ continue your existing webhook response / downstream processing
-    const type = safeStr(evt?.type);
+      const type = safeStr(evt?.type);
+      const emailId = safeStr(evt?.data?.id || evt?.data?.email_id);
 
-    // Resend sometimes surfaces the receiving email id as data.id (common),
-    // but guard for data.email_id just in case.
-    const emailId = safeStr(evt?.data?.id || evt?.data?.email_id);
+      logInfo("RESEND_VERIFIED_EVENT", {
+        requestId: getRequestId(req),
+        type,
+        createdAt: evt?.created_at,
+        emailId,
+        dataKeys: Object.keys(evt?.data || {}),
+      });
 
-    console.log("📩 RESEND VERIFIED EVENT:", {
-      type,
-      created_at: evt?.created_at,
-      emailId,
-      dataKeys: Object.keys(evt?.data || {}),
-    });
+      if (type !== "email.received" || !emailId) return res.json({ ok: true, ignored: true });
 
-    if (type !== "email.received" || !emailId) return res.json({ ok: true, ignored: true });
+      const bucket = safeStr(process.env.CLOUDFLARE_R2_BUCKET);
+      if (!bucket) return res.status(500).json({ ok: false, error: "R2_BUCKET_not_set" });
 
-    const bucket = safeStr(process.env.CLOUDFLARE_R2_BUCKET);
-    if (!bucket) return res.status(500).json({ ok: false, error: "R2_BUCKET_not_set" });
+      const email = await resendRetrieveReceivedEmail(emailId);
+      if (!email) return res.json({ ok: true, fetched: false });
 
-    const email = await resendRetrieveReceivedEmail(emailId);
-    if (!email) return res.json({ ok: true, fetched: false });
-
-    const toEmail = pickResendTo(email);
-    if (!toEmail) return res.json({ ok: true, fetched: true, processed: false, reason: "missing_to" });
+      const toEmail = pickResendTo(email);
+      if (!toEmail) return res.json({ ok: true, fetched: true, processed: false, reason: "missing_to" });
 
       const atts = await resendListReceivedAttachments(emailId);
-    const processed: any[] = [];
+      const processed: any[] = [];
 
-    if (atts.length) {
-      // ===============================
-      // Attachment guards (Hardening Step 2)
-      // ===============================
-      const oversized: any[] = [];
-      const allowed: typeof atts = [];
+      if (atts.length) {
+        // Attachment guards
+        const blocked: any[] = [];
+        const allowed: typeof atts = [];
 
-      let total = 0;
-      for (const att of atts.slice(0, MAX_ATTACHMENTS)) {
-        const original = safeStr(att?.filename) || "attachment.bin";
-        const safeName = normalizeUploadName(original);
+        let total = 0;
+        for (const att of atts.slice(0, MAX_ATTACHMENTS)) {
+          const original = safeStr(att?.filename) || "attachment.bin";
+          const safeName = normalizeUploadName(original);
 
-        // ✅ Hardening Step 1: allowlist enforced here (before download)
-        if (!isAllowedFileByName(safeName)) {
-          oversized.push({
-            id: safeStr(att?.id),
-            filename: safeName,
-            size: Number(att?.size || 0),
-            reason: "unsupported_file_type",
-            allowed: Array.from(ALLOWED_EXTS),
-          });
-          continue;
+          // allowlist enforced before download
+          if (!isAllowedFileByName(safeName)) {
+            blocked.push({
+              id: safeStr(att?.id),
+              filename: safeName,
+              size: Number(att?.size || 0),
+              reason: "unsupported_file_type",
+              allowed: Array.from(ALLOWED_EXTS),
+            });
+            continue;
+          }
+
+          const size = Number(att?.size || 0);
+
+          if (!Number.isFinite(size) || size <= 0) {
+            blocked.push({
+              id: safeStr(att?.id),
+              filename: safeName,
+              size,
+              reason: "missing_or_invalid_size",
+            });
+            continue;
+          }
+
+          if (size > MAX_ATTACHMENT_BYTES) {
+            blocked.push({
+              id: safeStr(att?.id),
+              filename: safeName,
+              size,
+              reason: "attachment_too_large",
+              limit: MAX_ATTACHMENT_BYTES,
+            });
+            continue;
+          }
+
+          if (total + size > MAX_TOTAL_ATTACH_BYTES) {
+            blocked.push({
+              id: safeStr(att?.id),
+              filename: safeName,
+              size,
+              reason: "total_attachments_too_large",
+              totalLimit: MAX_TOTAL_ATTACH_BYTES,
+            });
+            continue;
+          }
+
+          total += size;
+          allowed.push(att);
         }
 
-        const size = Number(att?.size || 0);
+        if (!allowed.length) {
+          const onlyUnsupported =
+            blocked.length > 0 && blocked.every((x) => safeStr(x?.reason) === "unsupported_file_type");
 
-        // Missing/invalid size: block (safer than downloading unknown huge files)
-        if (!Number.isFinite(size) || size <= 0) {
-          oversized.push({
-            id: safeStr(att?.id),
-            filename: safeName,
-            size,
-            reason: "missing_or_invalid_size",
-          });
-          continue;
-        }
+          if (onlyUnsupported) {
+            return res.status(415).json({
+              ok: false,
+              error: "unsupported_file_type",
+              emailId,
+              toEmail,
+              blocked,
+              allowed: Array.from(ALLOWED_EXTS),
+            });
+          }
 
-        if (size > MAX_ATTACHMENT_BYTES) {
-          oversized.push({
-            id: safeStr(att?.id),
-            filename: safeName,
-            size,
-            reason: "attachment_too_large",
-            limit: MAX_ATTACHMENT_BYTES,
-          });
-          continue;
-        }
-
-        if (total + size > MAX_TOTAL_ATTACH_BYTES) {
-          oversized.push({
-            id: safeStr(att?.id),
-            filename: safeName,
-            size,
-            reason: "total_attachments_too_large",
-            totalLimit: MAX_TOTAL_ATTACH_BYTES,
-          });
-          continue;
-        }
-
-        total += size;
-        allowed.push(att);
-      }
-
-      if (!allowed.length) {
-  const onlyUnsupported =
-    oversized.length > 0 && oversized.every((x) => safeStr(x?.reason) === "unsupported_file_type");
-
-  if (onlyUnsupported) {
-    return res.status(415).json({
-      ok: false,
-      error: "unsupported_file_type",
-      emailId,
-      toEmail,
-      blocked: oversized,
-      allowed: Array.from(ALLOWED_EXTS),
-    });
-  }
-
-  return res.status(413).json({
-    ok: false,
-    error: "attachments_blocked_by_size_guard",
-    emailId,
-    toEmail,
-    oversized,
-  });
-}
-
-      // ===============================
-      // Process allowed attachments only
-      // ===============================
-      for (const att of allowed) {
-        const original = safeStr(att?.filename) || "attachment.bin";
-        const safeName = normalizeUploadName(original);
-        const url = safeStr(att?.download_url);
-
-        if (!url) {
-          processed.push({ ok: false, filename: safeName, error: "missing_download_url" });
-          continue;
-        }
-
-        const buf = await downloadAttachmentToBuffer(url);
-        if (!buf || !buf.length) {
-          processed.push({ ok: false, filename: safeName, error: "download_failed" });
-          continue;
-        }
-
-        // Extra safety: enforce byte caps even after download
-        if (buf.length > MAX_ATTACHMENT_BYTES || buf.length > MAX_TOTAL_ATTACH_BYTES) {
-          processed.push({
+          return res.status(413).json({
             ok: false,
+            error: "attachments_blocked_by_size_guard",
+            emailId,
+            toEmail,
+            blocked,
+          });
+        }
+
+        // Process allowed attachments only
+        for (const att of allowed) {
+          const original = safeStr(att?.filename) || "attachment.bin";
+          const safeName = normalizeUploadName(original);
+          const url = safeStr(att?.download_url);
+
+          if (!url) {
+            processed.push({ ok: false, filename: safeName, error: "missing_download_url" });
+            continue;
+          }
+
+          const buf = await downloadAttachmentToBuffer(url);
+          if (!buf || !buf.length) {
+            processed.push({ ok: false, filename: safeName, error: "download_failed" });
+            continue;
+          }
+
+          // Enforce byte caps even after download
+          if (buf.length > MAX_ATTACHMENT_BYTES || buf.length > MAX_TOTAL_ATTACH_BYTES) {
+            processed.push({
+              ok: false,
+              filename: safeName,
+              error: "payload_too_large",
+              maxAttachmentBytes: MAX_ATTACHMENT_BYTES,
+              maxTotalBytes: MAX_TOTAL_ATTACH_BYTES,
+              size: buf.length,
+            });
+            continue;
+          }
+
+          const iso = new Date().toISOString();
+          const r2Key = `inbound/${iso.replace(/[:.]/g, "-")}__${safeName}`;
+
+          let r2: { bucket: string; key: string } | null = null;
+          try {
+            const up = await r2UploadBuffer({
+              key: r2Key,
+              buffer: buf,
+              contentType: safeStr(att?.content_type) || "application/octet-stream",
+            });
+            r2 = { bucket, key: up?.key || r2Key };
+            console.log("☁️ R2 UPLOAD ok (resend):", bucket, r2.key);
+          } catch {
+            processed.push({ ok: false, filename: safeName, error: "r2_upload_failed" });
+            continue;
+          }
+
+          const extractedText = await extractTextFromBuffer(safeName, buf);
+          const docType: "RESUME" | "NON_RESUME" =
+            extractedText.trim().length > 0 ? classifyDocTypeFromText(extractedText) : "NON_RESUME";
+
+          const result = await processInboundDoc({
+            requestId: getRequestId(req),
+            source: "resend",
             filename: safeName,
-            error: "payload_too_large",
-            maxAttachmentBytes: MAX_ATTACHMENT_BYTES,
-            maxTotalBytes: MAX_TOTAL_ATTACH_BYTES,
-            size: buf.length,
-          });
-          continue;
-        }
-
-        const iso = new Date().toISOString();
-        const r2Key = `inbound/${iso.replace(/[:.]/g, "-")}__${safeName}`;
-
-        let r2: { bucket: string; key: string } | null = null;
-        try {
-          const up = await r2UploadBuffer({
-            key: r2Key,
             buffer: buf,
-            contentType: safeStr(att?.content_type) || "application/octet-stream",
+            extractedText,
+            docType,
+            toEmail,
+            r2,
+            savedLocal: null,
+            deletedLocal: true,
           });
-          r2 = { bucket, key: up?.key || r2Key };
-          console.log("☁️ R2 UPLOAD ok (resend):", bucket, r2.key);
-        } catch {
-          processed.push({ ok: false, filename: safeName, error: "r2_upload_failed" });
-          continue;
+
+          processed.push({ ok: true, filename: safeName, r2Key: r2.key, docType, result });
         }
 
-        const extractedText = await extractTextFromBuffer(safeName, buf);
-        const docType: "RESUME" | "NON_RESUME" =
-          extractedText.trim().length > 0 ? classifyDocTypeFromText(extractedText) : "NON_RESUME";
-
-        const result = await processInboundDoc({
-          source: "resend",
-          filename: safeName,
-          buffer: buf,
-          extractedText,
-          docType,
-          toEmail,
-          r2,
-          savedLocal: null,
-          deletedLocal: true,
-        });
-
-        processed.push({ ok: true, filename: safeName, r2Key: r2.key, docType, result });
+        return res.json({ ok: true, emailId, toEmail, attachments: atts.length, processed });
       }
 
-      return res.json({ ok: true, emailId, toEmail, attachments: atts.length, processed });
+      // No attachments: text body. Treat as .txt (allowed)
+      const bodyText = safeStr((email as any).text || "");
+      if (!bodyText) return res.json({ ok: true, emailId, toEmail, attachments: 0, processed: false });
+
+      const iso = new Date().toISOString();
+      const safeName = `email_${emailId}.txt`;
+      const r2Key = `inbound/${iso.replace(/[:.]/g, "-")}__${safeName}`;
+      const buf = Buffer.from(bodyText, "utf8");
+
+      const up = await r2UploadBuffer({ key: r2Key, buffer: buf, contentType: "text/plain" });
+      const r2 = { bucket, key: up?.key || r2Key };
+
+      const docType: "RESUME" | "NON_RESUME" = classifyDocTypeFromText(bodyText);
+
+      const result = await processInboundDoc({
+        requestId: getRequestId(req),
+        source: "resend",
+        filename: safeName,
+        buffer: buf,
+        extractedText: bodyText,
+        docType,
+        toEmail,
+        r2,
+        savedLocal: null,
+        deletedLocal: true,
+      });
+
+      return res.json({ ok: true, emailId, toEmail, attachments: 0, processed: true, result });
+    } catch (e: any) {
+      console.warn("⚠️ RESEND webhook failed:", e?.message || e);
+      return res.status(400).json({ ok: false, error: "invalid_webhook" });
     }
-    // No attachments: text body. Treat as .txt (allowed)
-    const bodyText = safeStr((email as any).text || "");
-    if (!bodyText) return res.json({ ok: true, emailId, toEmail, attachments: 0, processed: false });
-
-    const iso = new Date().toISOString();
-    const safeName = `email_${emailId}.txt`;
-    const r2Key = `inbound/${iso.replace(/[:.]/g, "-")}__${safeName}`;
-    const buf = Buffer.from(bodyText, "utf8");
-
-    const up = await r2UploadBuffer({ key: r2Key, buffer: buf, contentType: "text/plain" });
-    const r2 = { bucket, key: up?.key || r2Key };
-
-    const docType: "RESUME" | "NON_RESUME" = classifyDocTypeFromText(bodyText);
-
-    const result = await processInboundDoc({
-      source: "resend",
-      filename: safeName,
-      buffer: buf,
-      extractedText: bodyText,
-      docType,
-      toEmail,
-      r2,
-      savedLocal: null,
-      deletedLocal: true,
-    });
-
-    return res.json({ ok: true, emailId, toEmail, attachments: 0, processed: true, result });
-  } catch (e: any) {
-    console.warn("⚠️ RESEND webhook failed:", e?.message || e);
-    return res.status(400).json({ ok: false, error: "invalid_webhook" });
   }
-});
+);
 
 // ============================
 // Stripe webhook (raw body) -> flips billing status to active/past_due/etc
@@ -1968,7 +2878,7 @@ app.post("/webhooks/stripe", express.raw({ type: "application/json" }), async (r
     if (!sig) return res.status(400).json({ ok: false, error: "missing_signature" });
 
     const event = stripe.webhooks.constructEvent(req.body as Buffer, sig, STRIPE_WEBHOOK_SECRET);
-    console.log("💳 STRIPE EVENT:", event.type);
+    console.log("💳 STRIPE EVENT:", event.type, { requestId: getRequestId(req) });
 
     const setStripeFieldsIfPossible = async (customerId: string, stripeCustomerId?: string, subId?: string) => {
       if (stripeCustomerId) await updateCustomerCellInMasterSheet(customerId, "stripeCustomerId", stripeCustomerId);
@@ -2052,15 +2962,39 @@ app.post("/webhooks/stripe", express.raw({ type: "application/json" }), async (r
       return res.json({ ok: true });
     }
 
-    return res.json({ ok: true });
-  } catch (e: any) {
-    console.error("❌ STRIPE_WEBHOOK_FAILED:", e?.message || e);
-    return res.status(400).json({ ok: false, error: "stripe_webhook_failed", message: String(e?.message || e) });
-  }
+   return res.json({ ok: true });
+} catch (e: any) {
+  // Always log full error server-side
+  console.error("❌ STRIPE_WEBHOOK_FAILED:", e);
+
+  // Never leak internals to client
+  return res.status(400).json({
+    ok: false,
+    error: "stripe_webhook_failed"
+  });
+}
 });
 
-// ✅ global JSON parser AFTER raw-body webhooks
+// ✅ global JSON parser AFTER raw-body webhooks (Stripe/Resend)
 app.use(express.json({ limit: "10mb" }));
+
+// ✅ JSON parse error handler (prevents HTML error pages)
+app.use((err: any, _req: Request, res: Response, next: any) => {
+  const isBadJson =
+    err?.type === "entity.parse.failed" ||
+    (err instanceof SyntaxError && "body" in (err as any)) ||
+    err?.status === 400;
+
+  if (isBadJson) {
+    return res.status(400).json({
+      ok: false,
+      error: "invalid_json",
+      message: "Malformed JSON body",
+    });
+  }
+
+  return next(err);
+});
 
 // ===== ROUTES =====
 app.use("/upload", uploadRoutes);
@@ -2068,11 +3002,183 @@ app.use(intakeRoutes);
 
 // ===== HEALTH =====
 app.get("/", (_req: Request, res: Response) => res.send("✅ Resume Sorter Backend Running"));
+// ============================
+// Signed Resume Viewing (secure permanent links)
+// GET /r/:requestId -> validates customer active -> 302 to fresh signed R2 URL
+// ============================
+app.get("/r/:requestId", async (req: Request, res: Response, next: any) => {
+  try {
+    const requestId = safeStr(req.params?.requestId);
+    if (!requestId) {
+      throw new AppError("Missing requestId", 400, "missing_requestId", true);
+    }
 
+    // 1) Lookup inbound doc by requestId
+    const r = await pool.query(
+      `
+      SELECT request_id, customer_id, resolved_customer_id, r2_key, doc_type
+      FROM inbound_docs
+      WHERE request_id = $1
+      ORDER BY created_at DESC
+      LIMIT 1
+      `,
+      [requestId]
+    );
+
+    const row = r.rows?.[0];
+    const r2Key = safeStr(row?.r2_key);
+    const custId = safeStr(row?.resolved_customer_id || row?.customer_id);
+    const docType = safeStr(row?.doc_type);
+
+    if (!row || !r2Key || !custId) {
+      throw new AppError("Not found", 404, "not_found", true);
+    }
+
+    // Optional safety: only allow resumes
+    if (docType && docType !== "RESUME") {
+      throw new AppError("Not found", 404, "not_found", true);
+    }
+
+    // 2) Validate customer active/allowed
+    const customers = await getCustomersCached();
+    const c = customers.find((x) => safeStr(x.customerId) === custId);
+
+    if (!c) {
+      throw new AppError("Not found", 404, "not_found", true);
+    }
+
+    const gate = isProcessingAllowed(c.status);
+    if (!gate.allowed) {
+      throw new AppError("Not allowed", 403, "not_allowed", true);
+    }
+
+        // 3) Generate a fresh signed URL (preferred)
+    //    (robust: supports different signer export names + return shapes)
+    let url = "";
+
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const r2Svc: any = require("./services/r2");
+
+      const signer =
+        r2Svc?.r2GetSignedUrl ||
+        r2Svc?.r2SignedUrlForKey ||
+        r2Svc?.r2CreateSignedUrl ||
+        r2Svc?.getSignedR2Url ||
+        r2Svc?.getSignedUrl ||
+        null;
+
+      if (typeof signer === "function") {
+        // Try object-arg style first, then positional
+        let out: any = null;
+
+        try {
+          out = await signer({ key: r2Key, expiresInSeconds: 600 });
+        } catch {
+          // ignore, try positional
+        }
+
+        if (!out) {
+          try {
+            out = await signer(r2Key, 600);
+          } catch {
+            // ignore
+          }
+        }
+
+        // Normalize return: string OR { url } OR { signedUrl }
+        if (typeof out === "string") url = out;
+        else if (out && typeof out === "object") {
+          url = safeStr(out.url || out.signedUrl || out.signed_url || "");
+        }
+      }
+    } catch {
+      url = "";
+    }
+    // Fallback: only if you explicitly enabled public links
+    if (!url) {
+      const publicUrl = buildR2PublicUrl(r2Key);
+      if (publicUrl) url = publicUrl;
+    }
+
+    if (!url) {
+      // This means you haven't wired a signer yet and public links are off
+      throw new AppError("Signed URL not configured", 500, "misconfigured_server", false);
+    }
+
+    // 4) Redirect to the fresh URL
+   // Prevent caching of signed URLs
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Expires", "0");
+
+    return res.redirect(302, url);
+  } catch (e: any) {
+    return next(e);
+  }
+});
+// ============================
+// Jobs API (multi-role hiring)
+// ============================
+
+// create job
+app.post("/customers/jobs/create", async (req: Request, res: Response, next: any) => {
+  try {
+    const customerId = safeStr(req.body?.customerId);
+    const title = safeStr(req.body?.title);
+    let rubric: any = req.body?.rubric;
+
+    if (!customerId) return res.status(400).json({ ok: false, error: "missing_customerId" });
+    if (!title) return res.status(400).json({ ok: false, error: "missing_title" });
+
+    if (typeof rubric === "string") {
+      const parsed = tryJsonParse(rubric);
+      rubric = parsed ?? { text: rubric };
+    }
+
+    if (!rubric || typeof rubric !== "object") {
+      return res.status(400).json({ ok: false, error: "missing_rubric" });
+    }
+
+    const job = await createCustomerJob(customerId, title, rubric);
+    return res.json({ ok: true, job });
+  } catch (e: any) {
+    return next(e);
+  }
+});
+
+// list jobs
+app.get("/customers/jobs/list", async (req: Request, res: Response, next: any) => {
+  try {
+    const customerId = safeStr(req.query.customerId);
+    if (!customerId) return res.status(400).json({ ok: false, error: "missing_customerId" });
+
+    const jobs = await listCustomerJobs(customerId);
+    return res.json({ ok: true, jobs });
+  } catch (e: any) {
+    return next(e);
+  }
+});
+
+// delete job
+app.post("/customers/jobs/delete", async (req: Request, res: Response, next: any) => {
+  try {
+    const customerId = safeStr(req.body?.customerId);
+    const jobId = safeStr(req.body?.jobId);
+
+    if (!customerId) return res.status(400).json({ ok: false, error: "missing_customerId" });
+    if (!jobId) return res.status(400).json({ ok: false, error: "missing_jobId" });
+
+    await deleteCustomerJob(customerId, jobId);
+    return res.json({ ok: true });
+  } catch (e: any) {
+    return next(e);
+  }
+});
 // ============================
 // Rubrics API
 // ============================
-app.post("/customers/rubric", async (req: Request, res: Response) => {
+app.post("/customers/rubric", async (req: Request, res: Response, next: any) => {
   try {
     const customerId = safeStr(req.body?.customerId);
     if (!customerId) return res.status(400).json({ ok: false, error: "missing_customerId" });
@@ -2091,10 +3197,11 @@ app.post("/customers/rubric", async (req: Request, res: Response) => {
     await upsertCustomerRubric(customerId, rubric);
     return res.json({ ok: true, customerId });
   } catch (e: any) {
-    return res.status(500).json({ ok: false, error: "rubric_save_failed", message: String(e?.message || e) });
+    return next(e);
   }
 });
-app.get("/customers/rubric", async (req: Request, res: Response) => {
+
+app.get("/customers/rubric", async (req: Request, res: Response, next: any) => {
   try {
     const customerId = safeStr(req.query.customerId);
     if (!customerId) return res.status(400).json({ ok: false, error: "missing_customerId" });
@@ -2102,14 +3209,14 @@ app.get("/customers/rubric", async (req: Request, res: Response) => {
     const rubric = await getCustomerRubric(customerId);
     return res.json({ ok: true, customerId, rubric });
   } catch (e: any) {
-    return res.status(500).json({ ok: false, error: "rubric_get_failed", message: String(e?.message || e) });
+    return next(e);
   }
 });
 
 // ============================
 // Customers: setup
 // ============================
-app.post("/customers/setup", async (req: Request, res: Response) => {
+app.post("/customers/setup", async (req: Request, res: Response, next: any) => {
   try {
     const companyName = safeStr(req.body?.companyName);
     if (!companyName) return res.status(400).json({ ok: false, error: "missing_companyName" });
@@ -2175,20 +3282,14 @@ app.post("/customers/setup", async (req: Request, res: Response) => {
       tallySheetUrl,
     });
   } catch (e: any) {
-    console.error("❌ /customers/setup error:", e?.response?.data || e?.message || e);
-    return res.status(500).json({
-      ok: false,
-      error: "customers_setup_failed",
-      message: String(e?.message || e),
-      data: e?.response?.data || null,
-    });
+    return next(e);
   }
 });
 
 // ============================
 // Billing endpoints
 // ============================
-app.post("/billing/create-checkout-session", async (req: Request, res: Response) => {
+app.post("/billing/create-checkout-session", async (req: Request, res: Response, next: any) => {
   try {
     if (!stripe) return res.status(500).json({ ok: false, error: "stripe_not_configured" });
     if (!STRIPE_PRICE_ID) return res.status(500).json({ ok: false, error: "missing_STRIPE_PRICE_ID" });
@@ -2228,12 +3329,11 @@ app.post("/billing/create-checkout-session", async (req: Request, res: Response)
 
     return res.json({ ok: true, url: session.url, sessionId: session.id });
   } catch (e: any) {
-    console.error("❌ create-checkout-session failed:", e?.message || e);
-    return res.status(500).json({ ok: false, error: "checkout_failed", message: String(e?.message || e) });
+    return next(e);
   }
 });
 
-app.post("/billing/create-portal-session", async (req: Request, res: Response) => {
+app.post("/billing/create-portal-session", async (req: Request, res: Response, next: any) => {
   try {
     if (!stripe) return res.status(500).json({ ok: false, error: "stripe_not_configured" });
 
@@ -2254,8 +3354,7 @@ app.post("/billing/create-portal-session", async (req: Request, res: Response) =
 
     return res.json({ ok: true, url: portal.url });
   } catch (e: any) {
-    console.error("❌ create-portal-session failed:", e?.message || e);
-    return res.status(500).json({ ok: false, error: "portal_failed", message: String(e?.message || e) });
+    return next(e);
   }
 });
 
@@ -2355,8 +3454,12 @@ function inboundFileMulter(req: Request, res: Response, next: any) {
   });
 }
 
-app.post("/webhooks/inbound-file", inboundFileMulter, async (req: Request, res: Response) => {
+app.post("/webhooks/inbound-file", rateLimit("inbound_file"), inboundFileMulter, async (req: Request, res: Response, next: any) => {
   try {
+    if (!INBOUND_FILE_ENABLED) {
+      return res.status(404).json({ ok: false, error: "not_found" });
+    }
+
     const f: any = (req as any).file;
     if (!f) return res.status(400).json({ ok: false, error: "no_file" });
 
@@ -2369,9 +3472,21 @@ app.post("/webhooks/inbound-file", inboundFileMulter, async (req: Request, res: 
     const original = safeStr(f.originalname || "upload.bin");
     const safeName = normalizeUploadName(original);
 
-    // ✅ Hardening Step 1: allowlist enforced here
+    // allowlist enforced here
     if (!isAllowedFileByName(safeName)) {
       return res.status(415).json(unsupportedFileTypePayload(safeName));
+    }
+
+    // enforce attachment byte cap for inbound-file too
+    const sizeBytes = Number(f.size || (f.buffer ? f.buffer.length : 0));
+    if (sizeBytes > MAX_ATTACHMENT_BYTES) {
+      return res.status(413).json({
+        ok: false,
+        error: "payload_too_large",
+        message: "File too large",
+        size: sizeBytes,
+        maxBytes: MAX_ATTACHMENT_BYTES,
+      });
     }
 
     const iso = new Date().toISOString();
@@ -2390,7 +3505,7 @@ app.post("/webhooks/inbound-file", inboundFileMulter, async (req: Request, res: 
       await fs.promises.writeFile(finalPath, f.buffer);
       savedLocal = finalPath;
       deletedLocal = false;
-      console.log("📎 FILE INBOUND saved:", finalPath);
+      console.log("📎 FILE INBOUND saved:", finalPath, { requestId: getRequestId(req) });
     }
 
     try {
@@ -2401,7 +3516,7 @@ app.post("/webhooks/inbound-file", inboundFileMulter, async (req: Request, res: 
       });
 
       r2 = { bucket, key: up?.key || r2Key };
-      console.log("☁️ R2 UPLOAD ok:", bucket, r2.key);
+      console.log("☁️ R2 UPLOAD ok:", bucket, r2.key, { requestId: getRequestId(req) });
     } catch (e: any) {
       console.error("❌ R2_UPLOAD_FAILED:", e?.message || e);
       return res.status(500).json({ ok: false, error: "r2_upload_failed", message: String(e?.message || e) });
@@ -2414,7 +3529,7 @@ app.post("/webhooks/inbound-file", inboundFileMulter, async (req: Request, res: 
     if (r2?.key && savedLocal) {
       try {
         await fs.promises.unlink(savedLocal);
-        console.log("🧹 LOCAL_DELETE_OK:", savedLocal);
+        console.log("🧹 LOCAL_DELETE_OK:", savedLocal, { requestId: getRequestId(req) });
         deletedLocal = true;
         savedLocal = null;
       } catch (e: any) {
@@ -2425,6 +3540,7 @@ app.post("/webhooks/inbound-file", inboundFileMulter, async (req: Request, res: 
     }
 
     const result = await processInboundDoc({
+      requestId: getRequestId(req),
       source: "inbound-file",
       filename: safeName,
       buffer: f.buffer,
@@ -2438,15 +3554,14 @@ app.post("/webhooks/inbound-file", inboundFileMulter, async (req: Request, res: 
 
     return res.json(result);
   } catch (e: any) {
-    console.error("❌ inbound-file error", e);
-    return res.status(500).json({ ok: false, error: "inbound_file_failed", message: String(e?.message || e) });
+    return next(e);
   }
 });
+
 // ✅ Multer error handler for inbound-file (prevents HTML error pages)
 app.use("/webhooks/inbound-file", (err: any, _req: Request, res: Response, next: any) => {
   if (!err) return next();
 
-  // Multer file size limit
   if (err?.code === "LIMIT_FILE_SIZE") {
     return res.status(413).json({
       ok: false,
@@ -2456,7 +3571,6 @@ app.use("/webhooks/inbound-file", (err: any, _req: Request, res: Response, next:
     });
   }
 
-  // Any other multer errors
   if (err?.name === "MulterError") {
     return res.status(400).json({ ok: false, error: "multer_error", code: err.code, message: String(err.message || err) });
   }
@@ -2464,57 +3578,147 @@ app.use("/webhooks/inbound-file", (err: any, _req: Request, res: Response, next:
   return next(err);
 });
 
-app.post("/webhooks/inbound-r2", async (req: Request, res: Response) => {
-  try {
-    const secret = req.header("X-Inbound-Secret");
-    if (process.env.INBOUND_WEBHOOK_SECRET) {
-      if (!secret || secret !== process.env.INBOUND_WEBHOOK_SECRET) {
-        return res.status(401).json({ ok: false, error: "unauthorized" });
+// ============================
+// inbound-r2 (cloud intake): fail-closed secret enforcement (prod)
+// ============================
+app.post(
+  "/webhooks/inbound-r2",
+  rateLimit("inbound_r2"),
+  async (req: Request, res: Response, next: any) => {
+    try {
+      // Accept new header name, keep old for back-compat
+      
+      const got = safeStr(
+        req.header("X-Inbound-R2-Secret") || req.header("X-Inbound-Secret")
+      );
+
+            // Fail-closed enforcement
+      if (INBOUND_SECRET_REQUIRED) {
+        const ok =
+          got &&
+          got.length === INBOUND_WEBHOOK_SECRET.length &&
+          crypto.timingSafeEqual(
+            Buffer.from(got),
+            Buffer.from(INBOUND_WEBHOOK_SECRET)
+          );
+
+        if (!ok) {
+          throw new AppError("Unauthorized", 401, "unauthorized", true);
+        }
+      } else {
+        // Back-compat: if secret configured, enforce even in dev
+        if (INBOUND_WEBHOOK_SECRET) {
+          const ok =
+            got &&
+            got.length === INBOUND_WEBHOOK_SECRET.length &&
+            crypto.timingSafeEqual(
+              Buffer.from(got),
+              Buffer.from(INBOUND_WEBHOOK_SECRET)
+            );
+
+          if (!ok) {
+            throw new AppError("Unauthorized", 401, "unauthorized", true);
+          }
+        }
       }
+
+      // ✅ log only after secret validation (dev only)
+      devLog(
+        "INBOUND_R2_ENTER",
+        getRequestId(req),
+        "ct=",
+        safeStr(req.header("content-type"))
+      );
+
+      // Body normalization (accept parsed JSON or string JSON)
+      const bodyRaw = req.body;
+
+let body: any = bodyRaw;
+
+if (Buffer.isBuffer(bodyRaw)) {
+  body = tryJsonParse(bodyRaw.toString("utf8"));
+} else if (typeof bodyRaw === "string") {
+  body = tryJsonParse(bodyRaw);
+}
+
+// If JSON middleware parsed successfully, bodyRaw will already be object.
+// If parsing failed, the global JSON error handler would have fired.
+// If parsing produced null (invalid JSON), treat as malformed.
+if (body == null || typeof body !== "object") {
+  throw new AppError("Malformed JSON body", 400, "invalid_json", true);
+}
+// If parser/middleware results in null/undefined, treat as invalid JSON.
+// If it's an empty object, let missing_key/toEmail handle it.
+
+      
+
+      const key = safeStr(body?.key);
+      const toEmail = safeStr(body?.toEmail || body?.to)
+        .trim()
+        .toLowerCase();
+
+      if (!key) throw new AppError("Missing key", 400, "missing_key", true);
+      if (!toEmail)
+        throw new AppError("Missing toEmail", 400, "missing_toEmail", true);
+
+      const bucket = safeStr(process.env.CLOUDFLARE_R2_BUCKET);
+      if (!bucket)
+        throw new AppError(
+          "R2 bucket not configured",
+          500,
+          "misconfigured_server",
+          false
+        );
+
+      const filename = safeBaseName(key).replace(
+        /^\d{4}-\d{2}-\d{2}T.*?Z__/,
+        ""
+      );
+
+      // allowlist enforced here
+      if (!isAllowedFileByName(filename)) {
+        return res.status(415).json(unsupportedFileTypePayload(filename));
+      }
+
+      const buffer = await r2DownloadToBuffer({ key });
+      if (!buffer)
+        throw new AppError("Object not found", 404, "object_not_found", true);
+
+      if (buffer.length > MAX_ATTACHMENT_BYTES) {
+        throw new AppError(
+          "Payload too large",
+          413,
+          "payload_too_large",
+          true
+        );
+      }
+
+      const extractedText = await extractTextFromBuffer(filename, buffer);
+
+      const docType: "RESUME" | "NON_RESUME" =
+        extractedText.trim().length > 0
+          ? classifyDocTypeFromText(extractedText)
+          : "NON_RESUME";
+
+      const result = await processInboundDoc({
+        requestId: getRequestId(req),
+        source: "inbound-r2",
+        filename,
+        buffer,
+        extractedText,
+        docType,
+        toEmail,
+        r2: { bucket, key },
+        savedLocal: null,
+        deletedLocal: true,
+      });
+
+      return res.json(result);
+    } catch (e: any) {
+      return next(e);
     }
-    const body = typeof req.body === "string" ? tryJsonParse(req.body) : req.body;
-
-    const key = safeStr((body as any)?.key);
-    const toEmail = safeStr((body as any)?.toEmail || (body as any)?.to).trim().toLowerCase();
-    if (!key) return res.status(400).json({ ok: false, error: "missing_key" });
-    if (!toEmail) return res.status(400).json({ ok: false, error: "missing_toEmail" });
-
-    const bucket = safeStr(process.env.CLOUDFLARE_R2_BUCKET);
-    if (!bucket) return res.status(500).json({ ok: false, error: "R2_BUCKET_not_set" });
-
-    const filename = safeBaseName(key).replace(/^\d{4}-\d{2}-\d{2}T.*?Z__/, "");
-
-    // ✅ Hardening Step 1: allowlist enforced here
-    if (!isAllowedFileByName(filename)) {
-      return res.status(415).json(unsupportedFileTypePayload(filename));
-    }
-
-    const buffer = await r2DownloadToBuffer({ key });
-    if (!buffer) return res.status(404).json({ ok: false, error: "object_not_found" });
-
-    const extractedText = await extractTextFromBuffer(filename, buffer);
-    const docType: "RESUME" | "NON_RESUME" =
-      extractedText.trim().length > 0 ? classifyDocTypeFromText(extractedText) : "NON_RESUME";
-
-    const result = await processInboundDoc({
-      source: "inbound-r2",
-      filename,
-      buffer,
-      extractedText,
-      docType,
-      toEmail,
-      r2: { bucket, key },
-      savedLocal: null,
-      deletedLocal: true,
-    });
-
-    return res.json(result);
-  } catch (e: any) {
-    console.error("❌ inbound-r2 error", e);
-    return res.status(500).json({ ok: false, error: "inbound_r2_failed", message: String(e?.message || e) });
   }
-});
-
+);
 // ============================
 // Nightly job (trial enforcement + customer daily reports)
 // ============================
@@ -2542,88 +3746,136 @@ async function runNightlyJob(): Promise<{ ok: true; date: string; report: string
     if (!trialEnds) continue;
 
     const isTrial = status === "trial" || status === "trialing";
-    const isEnded = isTrial && trialEnds <= cutoffUtc;
-    const isEndingSoon = isTrial && trialEnds > cutoffUtc && trialEnds <= soonUtc;
+const isEnded = isTrial && trialEnds <= cutoffUtc;
+const isEndingSoon = isTrial && trialEnds > cutoffUtc && trialEnds <= soonUtc;
 
-    if (isEnded) {
-      await updateCustomerStatusInMasterSheet(c.customerId, "trial_ended");
-      lines.push(`TRIAL ENDED: ${c.companyName} (${c.customerId}) -> trial_ended`);
-    } else if (isEndingSoon) {
-      lines.push(`TRIAL ENDING SOON: ${c.companyName} ends ${c.trialEndsAtISO}`);
-    }
+if (isEnded) {
+  await updateCustomerStatusInMasterSheet(c.customerId, "trial_ended");
+  lines.push(`TRIAL ENDED: ${c.companyName} (${c.customerId}) -> trial_ended`);
+ } else if (isEndingSoon) {
+    lines.push(`TRIAL ENDING SOON: ${c.companyName} ends ${c.trialEndsAtISO}`);
   }
+} // ✅ CLOSES the first: for (const c of customers) { ... }  <-- ADD THIS
 
-  // Customer daily reports
-  for (const c of customers) {
-    try {
-      const to = safeStr(c.adminEmail);
-      const sheetId = safeStr(c.tallySheetId);
-      if (!to || !sheetId) continue;
+// Customer daily reports
+for (const c of customers) {
+  try {
+    const to = safeStr(c.adminEmail);
+    const sheetId = safeStr(c.tallySheetId);
+    if (!to || !sheetId) continue;
 
-      const gate = isProcessingAllowed(c.status);
-      if (!gate.allowed) continue;
+    const gate = isProcessingAllowed(c.status);
+if (!gate.allowed) continue;
 
-      const t = await readTodayTallyRowByHeaders(sheetId, todayLocalISO);
-      if (!t.count || t.count <= 0) continue;
 
-      // Hardening Step 3: only include public link if explicitly enabled + base url set
-      const publicUrl = t.r2Key ? buildR2PublicUrl(t.r2Key) : "";
 
-      const avgOrLast = t.lastScore !== null ? `Last score: ${t.lastScore}` : `Last score: N/A`;
+    const t = await readTodayTallyRowByHeaders(sheetId, todayLocalISO);
+    if (!t.count || t.count <= 0) continue;
+    // NEVER include any resume link unless public links are explicitly enabled
+    const publicUrl = t.r2Key ? buildR2PublicUrl(t.r2Key) : "";
+    const avgOrLast = t.lastScore !== null ? `Last score: ${t.lastScore}` : `Last score: N/A`;
 
-      const body = [
-        `Daily Resume Report — ${safeStr(c.companyName)}`,
-        ``,
-        `Date: ${todayLocalISO}`,
-        `Resumes processed: ${t.count}`,
-        avgOrLast,
-        ``,
-        publicUrl ? `Latest resume (public): ${publicUrl}` : undefined,
-        ``,
-        t.resumeLinkCell ? `Latest resume link:` : undefined,
-        t.resumeLinkCell ? `${extractUrlFromHyperlinkFormula(t.resumeLinkCell) || t.resumeLinkCell}` : undefined,
-        ``,
-        t.r2KeysCsv ? `R2 keys:` : undefined,
-        t.r2KeysCsv ? `${t.r2KeysCsv}` : undefined,
-      ]
-        .filter(Boolean)
-        .join("\n");
+    const body = [
+      `Daily Resume Report — ${safeStr(c.companyName)}`,
+      ``,
+      `Date: ${todayLocalISO}`,
+      `Resumes processed: ${t.count}`,
+      avgOrLast,
+      ``,
+      publicUrl ? `Latest resume (public): ${publicUrl}` : undefined,
+      ``,
+      publicUrl ? `Latest resume link:` : undefined,
+      publicUrl ? `${publicUrl}` : undefined,
+      ``,
+      t.r2KeysCsv ? `R2 keys:` : undefined,
+      t.r2KeysCsv ? `${t.r2KeysCsv}` : undefined,
+    ]
+      .filter(Boolean)
+      .join("\n");
 
-      await sendCustomerText(to, `Daily Resume Report — ${safeStr(c.companyName)} (${todayLocalISO})`, body);
-      console.log("📨 NIGHTLY_CUSTOMER_SENT:", c.customerId, "->", to);
-    } catch (e: any) {
-      console.log("⚠️ NIGHTLY_CUSTOMER_FAILED:", c.customerId, e?.message || e);
-    }
+    const sheetUrl = safeStr(c.tallySheetUrl);
+    if (!sheetUrl) continue;
+
+    const subject = "Your updated resume sheet is ready";
+
+    const notificationBody = [
+      `Your resume sheet is ready.`,
+      ``,
+      `Company: ${safeStr(c.companyName)}`,
+      `Date: ${todayLocalISO}`,
+      ``,
+      `Open your sheet:`,
+      sheetUrl,
+      ``,
+      `– Digital Dominance`,
+    ]
+      .filter(Boolean)
+      .join("\n");
+
+    await sendCustomerText(to, subject, notificationBody);
+    console.log("📨 NIGHTLY_SHEET_LINK_SENT:", c.customerId, "->", to);
+  } catch (e: any) {
+    console.log("⚠️ NIGHTLY_CUSTOMER_FAILED:", c.customerId, e?.message || e);
   }
+}
 
+  // Optionally, send an admin report
   const report = lines.join("\n");
   await sendAdmin(`Resume Sorter Nightly (${todayLocalISO})`, report);
 
   return { ok: true, date: todayLocalISO, report };
-}
+} // ✅ CLOSE runNightlyJob()
 
-// Manual trigger (admin)
-app.get("/admin/nightly-run", async (req: Request, res: Response) => {
-  try {
-    const secret = safeStr(req.header("X-Admin-Secret"));
-    const expected = safeStr(process.env.ADMIN_JOB_SECRET);
+// --- Admin auth (fail-closed in prod) + no rate limit ---
+app.use("/admin", (req: Request, res: Response, next) => {
+  // Mark request so rate limiter can skip if it exists later
+  (req as any)._skipRateLimit = true;
 
+  const expected = safeStr(process.env.ADMIN_JOB_SECRET);
+  const got = safeStr(req.header("X-Admin-Secret"));
+
+  if (IS_PROD) {
     if (!expected) {
       return res.status(500).json({ ok: false, error: "missing_ADMIN_JOB_SECRET" });
     }
-    if (!secret || secret !== expected) {
-      return res.status(401).json({ ok: false, error: "unauthorized" });
-    }
 
+    const ok =
+      got &&
+      got.length === expected.length &&
+      crypto.timingSafeEqual(Buffer.from(got), Buffer.from(expected));
+
+    if (!ok) {
+      return res.status(401).json({ ok: false, error: "unauthorized_admin" });
+    }
+  } else {
+    // In dev: if secret is configured, enforce it; if not, allow
+    if (expected) {
+      const ok =
+        got &&
+        got.length === expected.length &&
+        crypto.timingSafeEqual(Buffer.from(got), Buffer.from(expected));
+
+      if (!ok) {
+        return res.status(401).json({ ok: false, error: "unauthorized_admin" });
+      }
+    }
+  }
+
+  next();
+});
+
+// Manual trigger (admin)
+app.get("/admin/nightly-run", async (_req: Request, res: Response, next: any) => {
+  try {
     const result = await runNightlyJob();
     return res.json(result);
   } catch (e: any) {
-    return res.status(500).json({ ok: false, error: e?.message || String(e) });
+    return next(e);
   }
 });
-// Cron
-const ENABLE_LOCAL_CRON =
-  String(process.env.ENABLE_LOCAL_CRON || "").toLowerCase() === "true";
+
+// Cron (local-only; prod should use Render Cron / external scheduler)
+const ENABLE_LOCAL_CRON = String(process.env.ENABLE_LOCAL_CRON || "").toLowerCase() === "true";
 
 if (ENABLE_LOCAL_CRON) {
   cron.schedule(
@@ -2635,8 +3887,8 @@ if (ENABLE_LOCAL_CRON) {
         const result = await runNightlyJob();
         console.log("✅ Nightly job complete");
         console.log(result.report);
-      } catch (e) {
-        console.log("❌ Nightly job failed:", e);
+      } catch (e: any) {
+        console.log("❌ Nightly job failed:", e?.message || e);
       }
     },
     { timezone: TIMEZONE }
@@ -2650,19 +3902,105 @@ if (ENABLE_LOCAL_CRON) {
 // Optional debug routes
 // ============================
 if (DEBUG_ROUTES_ENABLED) {
-  app.get("/debug/customers", async (_req: Request, res: Response) => {
+  function requireAdmin(req: Request, res: Response): boolean {
+    const expected = safeStr(process.env.ADMIN_JOB_SECRET);
+    const got = safeStr(req.header("X-Admin-Secret"));
+
+    if (!expected) {
+      res.status(500).json({ ok: false, error: "missing_ADMIN_JOB_SECRET" });
+      return false;
+    }
+    if (!got || got !== expected) {
+      res.status(401).json({ ok: false, error: "unauthorized" });
+      return false;
+    }
+    return true;
+  }
+
+  app.get("/debug/inbound-docs", async (req: Request, res: Response, next: any) => {
+    if (!requireAdmin(req, res)) return;
+
+    try {
+      const limit = Math.min(Math.max(Number(req.query.limit || 10), 1), 50);
+
+      const r = await pool.query(
+        `
+        SELECT created_at, source, to_email, customer_id, filename, r2_bucket, r2_key, doc_type
+        FROM inbound_docs
+        ORDER BY created_at DESC
+        LIMIT $1
+        `,
+        [limit]
+      );
+
+      return res.json({ ok: true, limit, rows: r.rows });
+    } catch (e: any) {
+      return next(e);
+    }
+  });
+
+  app.get("/debug/customers", async (req: Request, res: Response, next: any) => {
+    if (!requireAdmin(req, res)) return;
+
     try {
       const customers = await getCustomersCached();
       res.json({ ok: true, count: customers.length, customers });
     } catch (e: any) {
-      res.status(500).json({ ok: false, error: e?.message || String(e) });
+      return next(e);
     }
   });
 }
 
 // ============================
-// Start server
+// Vulnerability Sweep Step 3: response surface minimization
+// - JSON-only 404
+// - Single central error handler (no stack leaks)
 // ============================
+
+
+// final 404 (must be AFTER all routes, BEFORE error handler)
+app.use((req: Request, res: Response) => {
+  return res.status(404).json({ ok: false, error: "not_found", path: req.originalUrl });
+});
+
+// single global error handler (FINAL HARDENING)
+app.use((err: any, req: Request, res: Response, next: any) => {
+  const requestId = getRequestId(req) || safeStr(req.header("X-Request-Id")) || "";
+
+  // If headers already sent, delegate to default handler
+  if (res.headersSent) return next(err);
+
+  // Log full error server-side
+  logError("UNHANDLED_ERROR", {
+    requestId,
+    path: safeStr(req.path),
+    method: safeStr(req.method),
+    message: safeStr(err?.message || err),
+    code: safeStr(err?.code),
+    status: Number(err?.status || err?.statusCode || 500),
+  });
+
+  const statusCode = Number(err?.statusCode || err?.status || 500);
+  const isApp = err instanceof AppError;
+
+  const safeStatus = Number.isFinite(statusCode) ? Math.min(Math.max(statusCode, 400), 599) : 500;
+
+  // In prod, never leak stack/messages unless explicitly marked safe
+  const expose = isApp ? !!(err as AppError).expose : !IS_PROD;
+
+  const code = isApp ? safeStr((err as AppError).code || "internal_error") : "internal_error";
+  const message = expose ? safeStr(err?.message || "Error") : "Request failed";
+
+  return res.status(safeStatus).json({
+    ok: false,
+    error: code || "internal_error",
+    message,
+    requestId: requestId || undefined,
+  });
+});
+
+// ============================
+// Start server
 app.listen(PORT, () => {
   console.log(`🚀 Server running on http://localhost:${PORT}`);
 });
