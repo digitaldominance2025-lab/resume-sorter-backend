@@ -126,6 +126,9 @@ const TIMEZONE = process.env.TIMEZONE || "America/Regina";
 
 const NODE_ENV = safeStr(process.env.NODE_ENV).toLowerCase();
 const IS_PROD = NODE_ENV === "production";
+const BASE_URL =
+  safeStr(process.env.BASE_URL) ||
+  (IS_PROD ? "https://digitaldominance2025.ca" : "http://localhost:3000");
 
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL || "digitaldominance2025@gmail.com";
 const MASTER_SHEET_ID = process.env.MASTER_CUSTOMERS_SHEET_ID || "";
@@ -461,7 +464,19 @@ async function ensureDbTables() {
     } catch (e: any) {
       console.warn("⚠️ DB alter inbound_docs.request_id failed (continuing):", e?.message || e);
     }
+// Ensure pending_signups table exists (for Stripe trial checkout flow)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS pending_signups (
+      id TEXT PRIMARY KEY,
+      payload_json TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
 
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS pending_signups_created_at_idx
+    ON pending_signups(created_at)
+  `);
     console.log("✅ DB tables ensured");
   } catch (e: any) {
     console.warn("⚠️ DB bootstrap failed (continuing):", e?.message || e);
@@ -1405,7 +1420,6 @@ async function tallyApply(
 // ============================
 // Job-Section Sheet Engine (vertical left layout)
 // ============================
-
 // Visual markers in the sheet so we can reliably find sections
 const JOB_HEADER_PREFIX = "JOB:";
 
@@ -1415,11 +1429,57 @@ const RESUME_COL_HEADERS = [
   "source",
   "filename",
   "score",
+  "decision",
   "summary",
   "r2Key",
   "resumeLink",
   "requestId",
 ];
+
+// ✅ ONE TAB ONLY: rename first tab to "Resumes" and delete all others
+async function ensureSingleTabResumes(spreadsheetId: string) {
+  const sheets = google.sheets({ version: "v4", auth: oauth2Client });
+
+  const meta = await sheets.spreadsheets.get({ spreadsheetId });
+  const sheetList = meta.data.sheets || [];
+  if (!sheetList.length) return;
+
+  const first = sheetList[0];
+  const firstId = first.properties?.sheetId;
+  const firstTitle = safeStr(first.properties?.title);
+
+  const requests: any[] = [];
+
+  // Rename first tab to "Resumes"
+  if (Number.isFinite(firstId) && firstTitle !== "Resumes") {
+    requests.push({
+      updateSheetProperties: {
+        properties: { sheetId: firstId, title: "Resumes" },
+        fields: "title",
+      },
+    });
+  }
+
+  // Delete every other tab (hard enforce "one tab")
+  for (let i = 1; i < sheetList.length; i++) {
+    const sid = sheetList[i]?.properties?.sheetId;
+    if (Number.isFinite(sid)) {
+      requests.push({ deleteSheet: { sheetId: sid } });
+    }
+  }
+
+  if (!requests.length) return;
+
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId,
+    requestBody: { requests },
+  });
+
+  devLog("✅ SINGLE_TAB_ENFORCED:", spreadsheetId, {
+    renamedFrom: firstTitle || "(unknown)",
+    deletedTabs: Math.max(sheetList.length - 1, 0),
+  });
+}
 
 async function getSheetIdByTitle(spreadsheetId: string, title: string): Promise<number | null> {
   const sheets = google.sheets({ version: "v4", auth: oauth2Client });
@@ -1481,18 +1541,18 @@ async function appendJobSectionAtBottom(spreadsheetId: string, jobTitle: string)
 
   const sectionRows: any[] = [];
 
-  if (hasAny) sectionRows.push(["", "", "", "", "", "", "", ""]); // spacer
+  if (hasAny) sectionRows.push(["", "", "", "", "", "", "", "", ""]); // spacer (9 cols)
 
-  sectionRows.push([jobHeaderCell(jobTitle), "", "", "", "", "", "", ""]); // job header row
-  sectionRows.push([...RESUME_COL_HEADERS]); // column headers row
+sectionRows.push([jobHeaderCell(jobTitle), "", "", "", "", "", "", "", ""]); // job header row (9 cols)
+sectionRows.push([...RESUME_COL_HEADERS]); // column headers row (must be 9 cols)
 
-  await sheets.spreadsheets.values.append({
-    spreadsheetId,
-    range: `${TAB}!A:H`,
-    valueInputOption: "RAW",
-    insertDataOption: "INSERT_ROWS",
-    requestBody: { values: sectionRows },
-  });
+await sheets.spreadsheets.values.append({
+  spreadsheetId,
+  range: `${TAB}!A:I`,
+  valueInputOption: "RAW",
+  insertDataOption: "INSERT_ROWS",
+  requestBody: { values: sectionRows },
+});
 }
 
 async function ensureJobSectionExists(spreadsheetId: string, jobTitle: string): Promise<void> {
@@ -1514,6 +1574,10 @@ async function appendResumeUnderJobSection(args: {
     source: string;
     filename: string;
     score: number | null;
+
+    // ✅ New column
+    decision?: string;
+
     summary: string;
     r2Key: string;
     resumeLink?: string;
@@ -1556,27 +1620,27 @@ async function appendResumeUnderJobSection(args: {
 
   // If we can't resolve sheetId, fall back to values.append at bottom (safe)
   if (sheetId == null) {
-    await sheets.spreadsheets.values.append({
-      spreadsheetId: args.spreadsheetId,
-      range: `${TAB}!A:H`,
-      valueInputOption: "RAW",
-      insertDataOption: "INSERT_ROWS",
-      requestBody: {
-        values: [[
-          args.row.receivedAt,
-          args.row.source,
-          args.row.filename,
-          args.row.score ?? "",
-          args.row.summary || "",
-          args.row.r2Key || "",
-          args.row.resumeLink || "",
-          args.row.requestId || "",
-        ]],
-      },
-    });
-    return;
-  }
-
+  await sheets.spreadsheets.values.append({
+    spreadsheetId: args.spreadsheetId,
+    range: `${TAB}!A:I`,
+    valueInputOption: "RAW",
+    insertDataOption: "INSERT_ROWS",
+    requestBody: {
+      values: [[
+        args.row.receivedAt,
+        args.row.source,
+        args.row.filename,
+        args.row.score ?? "",
+        (args.row as any).decision ?? "",
+        args.row.summary || "",
+        args.row.r2Key || "",
+        args.row.resumeLink || "",
+        args.row.requestId || "",
+      ]],
+    },
+  });
+  return;
+}
   // Insert a blank row at insertAt0 (0-based) to keep section intact
   await sheets.spreadsheets.batchUpdate({
     spreadsheetId: args.spreadsheetId,
@@ -1600,22 +1664,23 @@ async function appendResumeUnderJobSection(args: {
   // Write the resume row into that inserted row
   const rowNumber = insertAt0 + 1; // 1-based for A1 notation
   await sheets.spreadsheets.values.update({
-    spreadsheetId: args.spreadsheetId,
-    range: `${TAB}!A${rowNumber}:H${rowNumber}`,
-    valueInputOption: "RAW",
-    requestBody: {
-      values: [[
-        args.row.receivedAt,
-        args.row.source,
-        args.row.filename,
-        args.row.score ?? "",
-        args.row.summary || "",
-        args.row.r2Key || "",
-        args.row.resumeLink || "",
-        args.row.requestId || "",
-      ]],
-    },
-  });
+  spreadsheetId: args.spreadsheetId,
+  range: `${TAB}!A${rowNumber}:I${rowNumber}`,
+  valueInputOption: "RAW",
+  requestBody: {
+    values: [[
+      args.row.receivedAt,
+      args.row.source,
+      args.row.filename,
+      args.row.score ?? "",
+      (args.row as any).decision ?? "",
+      args.row.summary || "",
+      args.row.r2Key || "",
+      args.row.resumeLink || "",
+      args.row.requestId || "",
+    ]],
+  },
+});
 
   devLog("🧩 RESUME_APPENDED_UNDER_JOB:", args.spreadsheetId, args.jobTitle, { rowNumber });
 }
@@ -1643,12 +1708,14 @@ async function ensureSheetTabExists(spreadsheetId: string, title: string) {
    devLog("✅ SHEET_TAB_CREATED:", spreadsheetId, title);
 }
 
+// line above (keep whatever you already have above)
+
 async function ensureResumesTab(spreadsheetId: string) {
   const sheets = google.sheets({ version: "v4", auth: oauth2Client });
-
   const TAB = "Resumes";
 
-  await ensureSheetTabExists(spreadsheetId, TAB);
+  // ✅ ONE TAB ONLY (Resumes): enforce before touching headers
+  await ensureSingleTabResumes(spreadsheetId);
 
   const headerResp = await sheets.spreadsheets.values.get({
     spreadsheetId,
@@ -1656,141 +1723,131 @@ async function ensureResumesTab(spreadsheetId: string) {
   });
 
   const existing = headerResp.data.values?.[0] || [];
+  if (existing.length > 0) {
+    devLog("✅ RESUMES_TAB_INITIALIZED_SINGLE_TAB:", spreadsheetId);
+    return;
+  }
 
-  if (existing.length > 0) return;
-
-  await sheets.spreadsheets.values.update({
-    spreadsheetId,
-    range: `${TAB}!A1:H1`,
-    valueInputOption: "RAW",
-    requestBody: {
-      values: [[
+ await sheets.spreadsheets.values.update({
+  spreadsheetId,
+  range: `${TAB}!A1:I1`,
+  valueInputOption: "RAW",
+  requestBody: {
+    values: [
+      [
         "receivedAt",
         "source",
         "filename",
         "score",
+        "decision",
         "summary",
         "r2Key",
         "resumeLink",
-        "requestId"
-      ]],
-    },
-  });
+        "requestId",
+      ],
+    ],
+  },
+});
 
   devLog("✅ RESUMES_TAB_INITIALIZED:", spreadsheetId);
 }
+
+// line below (keep whatever you already have below)
+  
 // ============================
-// General Submissions Tab Helpers (NEW)
+// General Submissions Helpers (ONE TAB ONLY)
+// - DO NOT create a separate tab.
+// - "General Submissions" is a JOB section inside the single "Resumes" tab.
 // ============================
 
 async function ensureGeneralSubmissionsTab(spreadsheetId: string) {
-  const sheets = google.sheets({ version: "v4", auth: oauth2Client });
-  const TAB = "General Submissions";
+  // Back-compat: old name, new behavior.
+  // Enforce ONE TAB ONLY and ensure the "General Submissions" section exists.
+  await ensureSingleTabResumes(spreadsheetId);
+  await ensureJobSectionExists(spreadsheetId, "General Submissions");
+}
 
-  await ensureSheetTabExists(spreadsheetId, TAB);
+async function appendGeneralSubmissionRow(
+  spreadsheetId: string,
+  row: {
+    receivedAt: string;
+    source: string;
+    filename: string;
+    reason: string;
+    r2Key: string;
+    resumeLink?: string;
+    requestId: string;
+  }
+) {
+  await ensureSingleTabResumes(spreadsheetId);
+  await ensureJobSectionExists(spreadsheetId, "General Submissions");
 
-  const headerResp = await sheets.spreadsheets.values.get({
+  // Append using the SAME row schema as resumes, but with score=null and summary=reason
+  await appendResumeUnderJobSection({
     spreadsheetId,
-    range: `${TAB}!A1:G1`,
-  });
+    jobTitle: "General Submissions",
+    row: {
+      receivedAt: row.receivedAt,
+      source: row.source,
+      filename: row.filename,
+      score: null,
 
-  const existing = headerResp.data.values?.[0] || [];
-  if (existing.length > 0) return;
+      // ✅ Anything in General Submissions is an automatic NO
+      decision: "NO",
 
-  await sheets.spreadsheets.values.update({
-    spreadsheetId,
-    range: `${TAB}!A1:G1`,
-    valueInputOption: "RAW",
-    requestBody: {
-      values: [[
-        "receivedAt",
-        "source",
-        "filename",
-        "reason",
-        "r2Key",
-        "resumeLink",
-        "requestId",
-      ]],
+      summary: safeStr(row.reason || "").slice(0, 2000),
+      r2Key: row.r2Key || "",
+      resumeLink: row.resumeLink || "",
+      requestId: row.requestId || "",
     },
   });
 
-  devLog("✅ GENERAL_SUBMISSIONS_TAB_INITIALIZED:", spreadsheetId);
+  devLog("📝 GENERAL_SUBMISSION_SECTION_APPENDED:", spreadsheetId, row.requestId);
 }
 
-async function appendGeneralSubmissionRow(spreadsheetId: string, row: {
-  receivedAt: string;
-  source: string;
-  filename: string;
-  reason: string;
-  r2Key: string;
-  resumeLink?: string;
-  requestId: string;
-}) {
-  const sheets = google.sheets({ version: "v4", auth: oauth2Client });
-  const TAB = "General Submissions";
+async function appendResumeRow(
+  spreadsheetId: string,
+  row: {
+    receivedAt: string;
+    source: string;
+    filename: string;
+    score: number | null;
+    summary: string;
+    r2Key: string;
+    resumeLink?: string;
+    requestId: string;
+  }
+) {
+  // Old helper appended directly to Resumes tab.
+  // New behavior: enforce single tab + append under "Unsorted" job section
+  // (your routing code should call appendResumeUnderJobSection for matched jobs;
+  // this preserves any legacy call sites that still call appendResumeRow).
+  await ensureSingleTabResumes(spreadsheetId);
+  await ensureJobSectionExists(spreadsheetId, "Unsorted");
 
-  await ensureGeneralSubmissionsTab(spreadsheetId);
-
-  await sheets.spreadsheets.values.append({
+  await appendResumeUnderJobSection({
     spreadsheetId,
-    range: `${TAB}!A:G`,
-    valueInputOption: "RAW",
-    insertDataOption: "INSERT_ROWS",
-    requestBody: {
-      values: [[
-        row.receivedAt,
-        row.source,
-        row.filename,
-        row.reason || "",
-        row.r2Key || "",
-        row.resumeLink || "",
-        row.requestId || "",
-      ]],
+    jobTitle: "Unsorted",
+    row: {
+      receivedAt: row.receivedAt,
+      source: row.source,
+      filename: row.filename,
+      score: row.score ?? null,
+      summary: safeStr(row.summary || "").slice(0, 5000),
+      r2Key: row.r2Key || "",
+      resumeLink: row.resumeLink || "",
+      requestId: row.requestId || "",
     },
   });
 
-  devLog("📝 GENERAL_SUBMISSION_ROW_APPENDED:", spreadsheetId, row.requestId);
-}
-async function appendResumeRow(spreadsheetId: string, row: {
-  receivedAt: string;
-  source: string;
-  filename: string;
-  score: number | null;
-  summary: string;
-  r2Key: string;
-  resumeLink?: string;
-  requestId: string;
-}) {
-  const sheets = google.sheets({ version: "v4", auth: oauth2Client });
-  const TAB = "Resumes";
-
-  await sheets.spreadsheets.values.append({
-    spreadsheetId,
-    range: `${TAB}!A:H`,
-    valueInputOption: "RAW",
-    insertDataOption: "INSERT_ROWS",
-    requestBody: {
-      values: [[
-        row.receivedAt,
-        row.source,
-        row.filename,
-        row.score ?? "",
-        row.summary || "",
-        row.r2Key || "",
-        row.resumeLink || "",
-        row.requestId || "",
-      ]],
-    },
-  });
-
-  devLog("📝 RESUME_ROW_APPENDED:", spreadsheetId, row.r2Key);
+  devLog("📝 RESUME_SECTION_APPENDED:", spreadsheetId, row.requestId);
 }
 
- 
+
 // ============================
 // Tally sheet creation
 // ============================
-  
+
 async function createTallySheetForCustomer(companyName: string, customerId: string) {
   const drive = google.drive({ version: "v3", auth: oauth2Client });
   const sheets = google.sheets({ version: "v4", auth: oauth2Client });
@@ -1823,23 +1880,22 @@ async function createTallySheetForCustomer(companyName: string, customerId: stri
     },
   });
 
-    // Share with admin + current authed account (best effort)
+  // Share with admin + current authed account (best effort)
   if (ADMIN_EMAIL) await ensureSheetSharedOnce(spreadsheetId, ADMIN_EMAIL);
   const authedEmail = await logAuthedGoogleEmailFromTokens();
   if (authedEmail) await ensureSheetSharedOnce(spreadsheetId, authedEmail);
 
-  // ✅ Sheet must have all resumes: ensure Resumes tab exists + headers
+  // ✅ Hard enforce: ONE TAB ONLY + baseline sections exist
   try {
-    await ensureResumesTab(spreadsheetId);
+    await ensureSingleTabResumes(spreadsheetId); // ✅ rename first tab to "Resumes" and delete others
     await ensureJobSectionExists(spreadsheetId, "Unsorted");
-    await ensureGeneralSubmissionsTab(spreadsheetId);
+    await ensureJobSectionExists(spreadsheetId, "General Submissions"); // ✅ section, not tab
   } catch (e: any) {
-    console.warn("⚠️ ENSURE_SHEET_TABS_FAILED (continuing):", e?.message || e);
+    console.warn("⚠️ ENSURE_SHEET_LAYOUT_FAILED (continuing):", e?.message || e);
   }
 
   return { spreadsheetId, spreadsheetUrl: webViewLink };
-  }
-
+}
 // ============================
 // AI scoring wrapper
 // ============================
@@ -1960,6 +2016,7 @@ async function processInboundDoc(args: {
   buffer: Buffer;
   extractedText?: string;
   docType?: "RESUME" | "NON_RESUME";
+  customerId?: string;
   toEmail?: string;
   r2?: { bucket: string; key: string } | null;
   savedLocal?: string | null;
@@ -1992,31 +2049,53 @@ async function processInboundDoc(args: {
     args.docType || (extractedText.trim().length > 0 ? classifyDocTypeFromText(extractedText) : "NON_RESUME");
 
   const toEmail = safeStr(args.toEmail).trim().toLowerCase();
-  const filenameForEmail = safeStr(args.filename);
-  const r2KeyForEmail = safeStr(args?.r2?.key || "");
-  let resolvedCustomerId = "";
-  let customerId = "";
-  let match: CustomerRow | null = null;
+const filenameForEmail = safeStr(args.filename);
+const r2KeyForEmail = safeStr(args?.r2?.key || "");
+let resolvedCustomerId = "";
+let customerId = safeStr((args as any).customerId).trim();
+let match: CustomerRow | null = null;
 
-  if (toEmail) {
-    try {
-      const existingCustomers = await getCustomersCached();
-      match =
-        [...existingCustomers].reverse().find((x) => safeStr(x.intakeEmail).trim().toLowerCase() === toEmail) || null;
+// ✅ Prefer explicit customerId when provided (inbound-file/inbound-r2 testing & future API use)
+if (customerId) {
+  resolvedCustomerId = customerId;
+}
+// ✅ If customerId is provided, resolve customer directly (no intake email required)
+if (resolvedCustomerId) {
+  try {
+    const existingCustomers = await getCustomersCached();
+    match =
+      [...existingCustomers]
+        .reverse()
+        .find((x) => safeStr(x.customerId) === resolvedCustomerId) || null;
 
-      if (match) {
-        customerId = safeStr(match.customerId);
-        resolvedCustomerId = customerId;
-      } else {
-        console.log("⚠️ No customer resolved. toEmail=", toEmail);
-      }
-    } catch (e: any) {
-      console.warn("⚠️ CUSTOMER_RESOLVE_SKIPPED (google auth?):", e?.message || e);
+    if (match) {
+      customerId = safeStr(match.customerId);
+      resolvedCustomerId = customerId;
+    } else {
+      console.log("⚠️ No customer found for customerId=", resolvedCustomerId);
     }
-  } else {
-    console.log("⚠️ No customer resolved. missing toEmail");
+  } catch (e: any) {
+    console.warn("⚠️ CUSTOMER_LOOKUP_BY_ID_FAILED:", e?.message || e);
   }
+}
+if (!resolvedCustomerId && toEmail) {
+  try {
+    const existingCustomers = await getCustomersCached();
+    match =
+      [...existingCustomers]
+        .reverse()
+        .find((x) => safeStr(x.intakeEmail).trim().toLowerCase() === toEmail) || null;
 
+    if (match) {
+      customerId = safeStr(match.customerId);
+      resolvedCustomerId = customerId;
+    } else {
+      console.log("⚠️ No customer resolved. toEmail=", toEmail);
+    }
+  } catch (e: any) {
+    console.warn("⚠️ CUSTOMER_RESOLVE_SKIPPED (google auth?):", e?.message || e);
+  }
+}
   const billingStatus = safeStr(match?.status || "");
   const gate = isProcessingAllowed(billingStatus);
   const blocked = !!customerId && gate.allowed === false;
@@ -2190,11 +2269,10 @@ async function processInboundDoc(args: {
         const aiErrorLocal = !!ai?.error;
         const passedAiCriteria = !aiSkippedLocal && !aiErrorLocal;
 
-        // Always ensure baseline sheet + sections exist (one sheet, left-side sections)
-        await ensureResumesTab(sheetId);
+        // 🔒 One tab only + baseline sections always exist
+        await ensureResumesTab(sheetId);// rename first tab to "Resumes", never create extra tabs
         await ensureJobSectionExists(sheetId, "Unsorted");
         await ensureJobSectionExists(sheetId, "General Submissions");
-
         if (passedAiCriteria) {
           // ✅ PASS → route to Resumes section (job section / Unsorted)
           const jobs = await listCustomerJobs(customerId);
@@ -2202,11 +2280,14 @@ async function processInboundDoc(args: {
           const { matchedJobId, confidence } = await classifyResumeToJob(extractedText, jobs);
 
           let jobTitle = "Unsorted";
+
           if (matchedJobId && confidence >= JOB_MATCH_CONFIDENCE_THRESHOLD) {
-            const j = jobs.find((x) => safeStr(x.id) === matchedJobId);
-            if (j?.title) jobTitle = safeStr(j.title);
+          const j = jobs.find((x) => safeStr(x.id) === matchedJobId);
+          if (j?.title) jobTitle = safeStr(j.title);
           }
 
+           // ✅ Ensure the correct section exists before appending
+          await ensureJobSectionExists(sheetId, jobTitle);
           await appendResumeUnderJobSection({
             spreadsheetId: sheetId,
             jobTitle,
@@ -2215,6 +2296,11 @@ async function processInboundDoc(args: {
               source: args.source,
               filename: safeStr(args.filename),
               score,
+
+              // ✅ Hiring decision (simple + explainable)
+              decision:
+                Number(score) >= 80 ? "CALL" : Number(score) >= 50 ? "MAYBE" : "NO",
+
               summary: summary.slice(0, 2000),
               r2Key,
               resumeLink,
@@ -2231,6 +2317,7 @@ async function processInboundDoc(args: {
           });
         } else {
           // 🔵 FAIL AI criteria → route to "General Submissions" section (same sheet, same schema)
+          await ensureJobSectionExists(sheetId, "General Submissions");
           const reasonText = aiErrorLocal
             ? "ai_error"
             : `ai_skipped:${safeStr(ai?.reason) || "unknown"}`;
@@ -2457,7 +2544,100 @@ async function processInboundDoc(args: {
 // Express app
 // ============================
 const app = express();
+// ============================
+// Stripe: start trial checkout (card now, bill in 30 days)
+// ============================
+app.post("/stripe/start-trial-checkout", express.json(), async (req, res) => {
+  try {
+    if (!stripe) {
+      return res.status(500).json({ ok: false, error: "stripe_not_configured" });
+    }
+
+    const { companyName, adminEmail, jobs, criteria } = req.body || {};
+
+    if (!companyName || !adminEmail) {
+      return res.status(400).json({ ok: false, error: "missing_company_or_email" });
+    }
+
+    const STRIPE_PRICE_ID = safeStr(process.env.STRIPE_PRICE_ID);
+    if (!STRIPE_PRICE_ID) {
+      return res.status(500).json({ ok: false, error: "missing_STRIPE_PRICE_ID" });
+    }
+
+    // Store full payload server-side (Stripe metadata is too small for jobs/criteria)
+    const signupId = crypto.randomUUID();
+    const payload = {
+      companyName: safeStr(companyName),
+      adminEmail: safeStr(adminEmail),
+      jobs: Array.isArray(jobs) ? jobs : [],
+      criteria: criteria ?? null,
+    };
+
+    await pool.query(
+      `INSERT INTO pending_signups (id, payload_json) VALUES ($1, $2)`,
+      [signupId, JSON.stringify(payload)]
+    );
+
+    const successUrl = `${APP_URL}/signup/success?signupId=${signupId}`;
+    const cancelUrl = `${APP_URL}/signup?canceled=1`;
+
+    const session = await stripe.checkout.sessions.create({
+      mode: "subscription",
+      customer_email: safeStr(adminEmail),
+      line_items: [{ price: STRIPE_PRICE_ID, quantity: 1 }],
+      subscription_data: {
+        trial_period_days: 30, // ✅ $0 today, starts billing after 30 days
+        metadata: { signupId },
+      },
+      payment_method_collection: "always", // ✅ force card collection even if trial
+      success_url: successUrl,
+      cancel_url: cancelUrl,
+      metadata: { signupId },
+    });
+
+    return res.json({ ok: true, url: session.url, signupId });
+  } catch (err: any) {
+    console.error("STRIPE_START_TRIAL_CHECKOUT_ERR", err?.message || err);
+    return res.status(500).json({ ok: false, error: "stripe_checkout_failed" });
+  }
+});
 // ✅ Handle preflight quickly
+// ✅ CORS (fail-closed in prod; allow localhost in dev)
+const DEV_ALLOWED_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"];
+
+const corsOptions: cors.CorsOptions = {
+  origin: (origin, cb) => {
+    // Same-origin / server-to-server / curl (no Origin header)
+    if (!origin) return cb(null, true);
+
+    // Dev: allow localhost explicitly
+    if (process.env.NODE_ENV !== "production") {
+      if (DEV_ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+      return cb(new Error(`CORS blocked (dev): ${origin}`));
+    }
+
+    // Prod: fail-closed unless explicitly allowlisted
+    const raw = (process.env.CORS_ALLOW_ORIGINS || "").trim();
+    const allow = raw
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    if (allow.length === 0) return cb(new Error(`CORS blocked (prod): empty allowlist`));
+    if (allow.includes(origin)) return cb(null, true);
+
+    return cb(new Error(`CORS blocked (prod): ${origin}`));
+  },
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Admin-Secret", "X-Request-Id"],
+};
+
+// ✅ Handle preflight quickly (WITH the same options)
+app.options(/.*/, cors(corsOptions));
+
+// ✅ Apply CORS for all routes
+app.use(cors(corsOptions));
 app.options(/.*/, cors());
 // --- Security headers ---
 app.use((req, res, next) => {
@@ -3218,33 +3398,133 @@ app.get("/customers/rubric", async (req: Request, res: Response, next: any) => {
 // ============================
 app.post("/customers/setup", async (req: Request, res: Response, next: any) => {
   try {
-    const companyName = safeStr(req.body?.companyName);
+    // ✅ If coming back from Stripe success page, we pass signupId
+    const signupId = safeStr(req.body?.signupId);
+
+    let companyName = "";
+    let adminEmail = "";
+    let payload: any = null;
+
+        if (signupId) {
+      // ✅ Idempotency FIRST: if already completed, return the stored result immediately
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS completed_signups (
+          signup_id TEXT PRIMARY KEY,
+          intake_email TEXT,
+          sheet_url TEXT,
+          manage_url TEXT,
+          customer_id TEXT,
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+      `);
+
+      const done = await pool.query(
+        `SELECT intake_email, sheet_url, manage_url, customer_id FROM completed_signups WHERE signup_id = $1 LIMIT 1`,
+        [signupId]
+      );
+
+      const d = done?.rows?.[0];
+      if (d?.intake_email && d?.sheet_url && d?.manage_url) {
+        return res.json({
+          ok: true,
+          intakeEmail: safeStr(d.intake_email),
+          sheetUrl: safeStr(d.sheet_url),
+          manageUrl: safeStr(d.manage_url),
+          customerId: safeStr(d.customer_id),
+          // nice to have for debugging
+          signupId,
+          idempotent: true,
+        });
+      }
+
+      // Load stored signup payload (jobs/criteria too large for Stripe metadata)
+      const r = await pool.query(`SELECT payload_json FROM pending_signups WHERE id = $1`, [signupId]);
+      const payloadJson = safeStr(r?.rows?.[0]?.payload_json);
+
+      if (!payloadJson) return res.status(400).json({ ok: false, error: "invalid_signupId" });
+
+      try {
+        payload = JSON.parse(payloadJson);
+      } catch {
+        return res.status(500).json({ ok: false, error: "pending_signup_payload_corrupt" });
+      }
+
+      companyName = safeStr(payload?.companyName);
+      adminEmail = safeStr(payload?.adminEmail);
+    } else {
+      // Back-compat: allow direct body call (old flow)
+      companyName = safeStr(req.body?.companyName);
+      adminEmail = safeStr(req.body?.adminEmail) || safeStr(ADMIN_EMAIL);
+      payload = req.body || null;
+    }
+
     if (!companyName) return res.status(400).json({ ok: false, error: "missing_companyName" });
+       if (!adminEmail) return res.status(400).json({ ok: false, error: "missing_adminEmail" });
+
 
     if (!MASTER_SHEET_ID) return res.status(500).json({ ok: false, error: "MASTER_CUSTOMERS_SHEET_ID not set" });
-
     await oauth2Client.getAccessToken();
     await ensureMasterHeaders();
 
+    const criteria = payload?.criteria ?? null;
     const slug = makeSlug(companyName);
     const customerId = makeCustomerId(slug);
-    const intakeEmail = `${slug}@digitaldominance.ca`;
+    // ✅ Persist rubric from signup payload (so scoring uses it automatically)
+if (criteria && typeof criteria === "object") {
+  await upsertCustomerRubric(customerId, criteria);
+}
+    const intakeEmail = `${slug}@goeasypaper.com`;
 
     const nowLocal = toZonedTime(new Date(), TIMEZONE);
     const trialStartAt = formatISO(nowLocal, { representation: "date" });
     const trialEndAt = formatISO(addDaysDfns(nowLocal, 30), { representation: "date" });
 
+    // Pull jobs/criteria from payload (Stripe signup flow)
+    const jobsFromPayload: string[] = Array.isArray(payload?.jobs)
+      ? payload.jobs.map((x: any) => safeStr(x)).filter(Boolean)
+      : [];
+
+    const criteriaFromPayload: any = payload?.criteria ?? payload?.rubric ?? null;
+
     const tally = await createTallySheetForCustomer(companyName, customerId);
     const tallySheetId = safeStr(tally?.spreadsheetId);
     const tallySheetUrl = safeStr(tally?.spreadsheetUrl);
-    const createdAtIso = new Date().toISOString();
 
+    if (!tallySheetId) {
+      throw new Error("Missing tallySheetId from createTallySheetForCustomer");
+    }
+
+    // 🔒 Enforce single-sheet job layout (no extra tabs, jobs down left)
+    await ensureResumesTab(tallySheetId);
+
+    // Always baseline sections
+    await ensureJobSectionExists(tallySheetId, "Unsorted");
+    await ensureJobSectionExists(tallySheetId, "General Submissions");
+
+    // Ensure customer job sections (if provided)
+    for (const j of jobsFromPayload) {
+      try {
+        await ensureJobSectionExists(tallySheetId, j);
+      } catch (e: any) {
+        console.log("⚠️ JOB_SECTION_CREATE_FAILED (continuing):", j, e?.message || e);
+      }
+    }
+
+        // ✅ Store jobs + criteria (real DB persistence)
+    try {
+      if (criteriaFromPayload) {
+        await upsertCustomerRubric(customerId, criteriaFromPayload);
+      }
+    } catch (e: any) {
+      console.log("⚠️ UPSERT_CUSTOMER_RUBRIC_FAILED (continuing):", e?.message || e);
+    }
+    const createdAtIso = new Date().toISOString();
     const row = [
       customerId,
       companyName,
-      slug,
+      slug,  
       intakeEmail,
-      ADMIN_EMAIL,
+      adminEmail, // ✅ was ADMIN_EMAIL; now use customer email
       "trial",
       trialStartAt,
       trialEndAt,
@@ -3268,24 +3548,76 @@ app.post("/customers/setup", async (req: Request, res: Response, next: any) => {
 
     invalidateCustomersCache();
 
+    const sheetUrl = tallySheetUrl || `https://docs.google.com/spreadsheets/d/${tallySheetId}`;
+    const manageUrl = `${APP_URL}/manage`;
+
+    // ✅ Send activation email (one email) to the signup/admin email
+    let activationEmailSent = false;
+    try {
+      await (emailSvc as any).sendCustomerTextEmail({
+        to: safeStr(adminEmail),
+        subject: `Your trial is live — ${companyName}`,
+        text:
+          `You're live.\n\n` +
+          `Intake email:\n${intakeEmail}\n\n` +
+          `Your sheet:\n${sheetUrl}\n\n` +
+          `Manage jobs:\n${manageUrl}\n\n` +
+          `Send job ads + resumes to that intake email. We'll score + sort them into your sheet automatically.\n`,
+      });
+      activationEmailSent = true;
+    } catch (e: any) {
+      console.log("📧 ACTIVATION_EMAIL_FAILED (continuing):", e?.message || e);
+    }
+
+        // ✅ Mark signup complete (idempotency) + then delete pending row
+    if (signupId) {
+      try {
+        // Save the “final answer” so success-page refresh never duplicates work
+        await pool.query(
+          `
+          INSERT INTO completed_signups (signup_id, intake_email, sheet_url, manage_url, customer_id)
+          VALUES ($1, $2, $3, $4, $5)
+          ON CONFLICT (signup_id) DO UPDATE SET
+            intake_email = EXCLUDED.intake_email,
+            sheet_url = EXCLUDED.sheet_url,
+            manage_url = EXCLUDED.manage_url,
+            customer_id = EXCLUDED.customer_id
+          `,
+          [signupId, safeStr(intakeEmail), safeStr(sheetUrl), safeStr(manageUrl), safeStr(customerId)]
+        );
+      } catch (e: any) {
+        console.log("⚠️ COMPLETED_SIGNUP_WRITE_FAILED (continuing):", e?.message || e);
+      }
+
+      try {
+        await pool.query(`DELETE FROM pending_signups WHERE id = $1`, [signupId]);
+      } catch (e: any) {
+        console.log("⚠️ PENDING_SIGNUP_DELETE_FAILED (continuing):", e?.message || e);
+      }
+    }
+
     return res.json({
       ok: true,
+      intakeEmail,
+      sheetUrl,
+      manageUrl,
+
+      // keep your existing extras (handy for debugging)
       companyName,
       slug,
       customerId,
-      intakeEmail,
-      adminEmail: ADMIN_EMAIL,
+      adminEmail,
       status: "trial",
       trialStartAt,
       trialEndAt,
       tallySheetId,
       tallySheetUrl,
+      activationEmailSent,
     });
   } catch (e: any) {
     return next(e);
   }
 });
-
 // ============================
 // Billing endpoints
 // ============================
@@ -3357,7 +3689,6 @@ app.post("/billing/create-portal-session", async (req: Request, res: Response, n
     return next(e);
   }
 });
-
 // ============================
 // Auth
 // ============================
@@ -3401,7 +3732,7 @@ app.get("/auth/google/callback", async (req: Request, res: Response) => {
     if (!code) return res.status(400).send("Missing ?code=");
 
     const { tokens } = await oauth2Client.getToken(code);
-
+    console.log("GOOGLE_TOKENS_JSON_FRESH:", JSON.stringify(tokens));
     console.log("🔐 NEW TOKENS META:", {
       token_type: tokens.token_type,
       scope: tokens.scope,
@@ -3464,8 +3795,9 @@ app.post("/webhooks/inbound-file", rateLimit("inbound_file"), inboundFileMulter,
     if (!f) return res.status(400).json({ ok: false, error: "no_file" });
 
     const toEmail = safeStr((req.body as any)?.toEmail || (req.body as any)?.to).trim().toLowerCase();
-    if (!toEmail) return res.status(400).json({ ok: false, error: "missing_toEmail" });
+if (!toEmail) return res.status(400).json({ ok: false, error: "missing_toEmail" });
 
+const customerId = safeStr((req.query as any)?.customerId || (req.body as any)?.customerId).trim();
     const bucket = safeStr(process.env.CLOUDFLARE_R2_BUCKET);
     if (!bucket) return res.status(500).json({ ok: false, error: "R2_BUCKET_not_set" });
 
@@ -3540,18 +3872,18 @@ app.post("/webhooks/inbound-file", rateLimit("inbound_file"), inboundFileMulter,
     }
 
     const result = await processInboundDoc({
-      requestId: getRequestId(req),
-      source: "inbound-file",
-      filename: safeName,
-      buffer: f.buffer,
-      extractedText,
-      docType,
-      toEmail,
-      r2,
-      savedLocal,
-      deletedLocal,
-    });
-
+  requestId: getRequestId(req),
+  source: "inbound-file",
+  filename: safeName,
+  buffer: f.buffer,
+  extractedText,
+  docType,
+  toEmail,
+  customerId,
+  r2,
+  savedLocal,
+  deletedLocal,
+});
     return res.json(result);
   } catch (e: any) {
     return next(e);
@@ -3757,68 +4089,84 @@ if (isEnded) {
   }
 } // ✅ CLOSES the first: for (const c of customers) { ... }  <-- ADD THIS
 
-// Customer daily reports
-for (const c of customers) {
-  try {
-    const to = safeStr(c.adminEmail);
-    const sheetId = safeStr(c.tallySheetId);
-    if (!to || !sheetId) continue;
+     // Customer daily reports
+  for (const c of customers) {
+    try {
+      const to = safeStr(c.adminEmail);
 
-    const gate = isProcessingAllowed(c.status);
-if (!gate.allowed) continue;
-
-
-
-    const t = await readTodayTallyRowByHeaders(sheetId, todayLocalISO);
-    if (!t.count || t.count <= 0) continue;
-    // NEVER include any resume link unless public links are explicitly enabled
-    const publicUrl = t.r2Key ? buildR2PublicUrl(t.r2Key) : "";
-    const avgOrLast = t.lastScore !== null ? `Last score: ${t.lastScore}` : `Last score: N/A`;
-
-    const body = [
-      `Daily Resume Report — ${safeStr(c.companyName)}`,
-      ``,
-      `Date: ${todayLocalISO}`,
-      `Resumes processed: ${t.count}`,
-      avgOrLast,
-      ``,
-      publicUrl ? `Latest resume (public): ${publicUrl}` : undefined,
-      ``,
-      publicUrl ? `Latest resume link:` : undefined,
-      publicUrl ? `${publicUrl}` : undefined,
-      ``,
-      t.r2KeysCsv ? `R2 keys:` : undefined,
-      t.r2KeysCsv ? `${t.r2KeysCsv}` : undefined,
-    ]
-      .filter(Boolean)
-      .join("\n");
-
-    const sheetUrl = safeStr(c.tallySheetUrl);
-    if (!sheetUrl) continue;
-
-    const subject = "Your updated resume sheet is ready";
-
-    const notificationBody = [
-      `Your resume sheet is ready.`,
-      ``,
-      `Company: ${safeStr(c.companyName)}`,
-      `Date: ${todayLocalISO}`,
-      ``,
-      `Open your sheet:`,
-      sheetUrl,
-      ``,
-      `– Digital Dominance`,
-    ]
-      .filter(Boolean)
-      .join("\n");
-
-    await sendCustomerText(to, subject, notificationBody);
-    console.log("📨 NIGHTLY_SHEET_LINK_SENT:", c.customerId, "->", to);
-  } catch (e: any) {
-    console.log("⚠️ NIGHTLY_CUSTOMER_FAILED:", c.customerId, e?.message || e);
-  }
+      const sheetId = safeStr(c.tallySheetId);
+      if (!to || !sheetId) {
+  devLog("🌙 NIGHTLY_SKIP_MISSING_TO_OR_SHEET:", {
+    customerId: c.customerId,
+    to: !!to,
+    sheetId: !!sheetId,
+  });
+  continue;
 }
+      if (!to || !sheetId) continue;
 
+      const gate = isProcessingAllowed(c.status);
+      if (!gate.allowed) {
+  devLog("🌙 NIGHTLY_SKIP_GATE:", {
+    customerId: c.customerId,
+    status: c.status,
+    reason: gate.reason,
+  });
+  continue;
+}
+      if (!gate.allowed) continue;
+
+      const sheetUrl = `https://docs.google.com/spreadsheets/d/${sheetId}`;
+      const manageJobsUrl = `${BASE_URL}/manage`;
+
+      const subject = "Your updated resume sheet is ready";
+
+      const html = `
+        <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;background:#fff;color:#111;padding:24px;">
+          <div style="max-width:640px;margin:0 auto;">
+            <h2 style="margin:0 0 10px 0;font-size:22px;line-height:1.2;">
+              Your updated resume sheet is ready
+            </h2>
+
+            <p style="margin:0 0 18px 0;color:#333;font-size:14px;line-height:1.45;">
+              Click a button:
+            </p>
+
+            <div style="display:flex;gap:12px;flex-wrap:wrap;margin:18px 0 8px 0;">
+              <a href="${sheetUrl}"
+                 style="display:inline-block;padding:14px 18px;border-radius:10px;text-decoration:none;font-weight:700;font-size:14px;background:#B11226;color:#fff;">
+                Daily Resumes
+              </a>
+
+              <a href="${manageJobsUrl}"
+                 style="display:inline-block;padding:14px 18px;border-radius:10px;text-decoration:none;font-weight:700;font-size:14px;background:#111;color:#fff;">
+                Manage Jobs
+              </a>
+            </div>
+
+            <p style="margin:16px 0 0 0;color:#666;font-size:12px;line-height:1.45;">
+              If a button doesn’t work, copy/paste links:
+              <br/>Daily Resumes: ${sheetUrl}
+              <br/>Manage Jobs: ${manageJobsUrl}
+            </p>
+
+            <div style="margin-top:18px;color:#888;font-size:12px;">
+              – Digital Dominance
+            </div>
+          </div>
+        </div>
+      `.trim();
+
+      // ✅ Use the helper you already use for customer emails
+      await sendCustomerText(to, subject, html);
+      devLog("📨 NIGHTLY_SHEET_LINK_SENT:", c.customerId, "->", to);
+    } catch (e: any) {
+      devLog("⚠️ NIGHTLY_CUSTOMER_FAILED:", c.customerId, e?.message || e);
+      lines.push(
+        `DAILY EMAIL ERROR: ${c.companyName || c.customerId} -> ${safeStr(e?.message)}`
+      );
+    }
+  }
   // Optionally, send an admin report
   const report = lines.join("\n");
   await sendAdmin(`Resume Sorter Nightly (${todayLocalISO})`, report);

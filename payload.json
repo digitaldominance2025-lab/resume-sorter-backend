@@ -1,0 +1,6 @@
+﻿{
+  "companyName": "Test Co",
+  "adminEmail": "you@you.com",
+  "jobs": [{ "title": "Pipeline Operator" }],
+  "criteria": { "yearsExp": true }
+}
