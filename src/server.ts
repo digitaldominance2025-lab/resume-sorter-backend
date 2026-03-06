@@ -2549,12 +2549,14 @@ if (!resolvedCustomerId && toEmail) {
 // Express app
 // ============================
 const app = express();
-// ✅ Parse JSON early (before routes)
-app.use(express.json({ limit: "2mb" }));
 
-// ✅ CORS must be BEFORE routes
+// ✅ CORS first
 app.options(/.*/, cors(corsOptions));
 app.use(cors(corsOptions));
+
+// ✅ Then parse JSON
+app.use(express.json({ limit: "2mb" }));
+
 // ============================
 // Stripe: start trial checkout (card now, bill in 30 days)
 // ============================
@@ -2569,7 +2571,6 @@ app.post("/stripe/start-trial-checkout", async (req, res) => {
     if (!companyName || !adminEmail) {
       return res.status(400).json({ ok: false, error: "missing_company_or_email" });
     }
-
     const STRIPE_PRICE_ID = safeStr(process.env.STRIPE_PRICE_ID);
     if (!STRIPE_PRICE_ID) {
       return res.status(500).json({ ok: false, error: "missing_STRIPE_PRICE_ID" });
