@@ -2545,75 +2545,6 @@ if (!resolvedCustomerId && toEmail) {
   };
 } // <-- end processInboundDoc
 
-// ============================
-// Express app
-// ============================
-const app = express();
-
-// ✅ CORS first
-app.options(/.*/, cors(corsOptions));
-app.use(cors(corsOptions));
-
-// ✅ Then parse JSON
-
-
-// ============================
-// Stripe: start trial checkout (card now, bill in 30 days)
-// ============================
-app.post("/stripe/start-trial-checkout", cors(corsOptions), async (req, res) => {
-  try {
-    if (!stripe) {
-      return res.status(500).json({ ok: false, error: "stripe_not_configured" });
-    }
-
-    const { companyName, adminEmail, jobs, criteria } = req.body || {};
-
-    if (!companyName || !adminEmail) {
-      return res.status(400).json({ ok: false, error: "missing_company_or_email" });
-    }
-    const STRIPE_PRICE_ID = safeStr(process.env.STRIPE_PRICE_ID);
-    if (!STRIPE_PRICE_ID) {
-      return res.status(500).json({ ok: false, error: "missing_STRIPE_PRICE_ID" });
-    }
-
-    // Store full payload server-side (Stripe metadata is too small for jobs/criteria)
-    const signupId = crypto.randomUUID();
-    const payload = {
-      companyName: safeStr(companyName),
-      adminEmail: safeStr(adminEmail),
-      jobs: Array.isArray(jobs) ? jobs : [],
-      criteria: criteria ?? null,
-    };
-
-    await pool.query(
-      `INSERT INTO pending_signups (id, payload_json) VALUES ($1, $2)`,
-      [signupId, JSON.stringify(payload)]
-    );
-
-    const successUrl = `${APP_URL}/signup/success?signupId=${signupId}`;
-    const cancelUrl = `${APP_URL}/signup?canceled=1`;
-
-    const session = await stripe.checkout.sessions.create({
-      mode: "subscription",
-      customer_email: safeStr(adminEmail),
-      line_items: [{ price: STRIPE_PRICE_ID, quantity: 1 }],
-      subscription_data: {
-        trial_period_days: 30, // ✅ $0 today, starts billing after 30 days
-        metadata: { signupId },
-      },
-      payment_method_collection: "always", // ✅ force card collection even if trial
-      success_url: successUrl,
-      cancel_url: cancelUrl,
-      metadata: { signupId },
-    });
-
-    return res.json({ ok: true, url: session.url, signupId });
-  } catch (err: any) {
-    console.error("STRIPE_START_TRIAL_CHECKOUT_ERR", err?.message || err);
-    return res.status(500).json({ ok: false, error: "stripe_checkout_failed" });
-  }
-});
-// ✅ Handle preflight quickly
 // ✅ CORS (fail-closed in prod; allow localhost in dev)
 const DEV_ALLOWED_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"];
 
@@ -2645,12 +2576,17 @@ const corsOptions: cors.CorsOptions = {
   allowedHeaders: ["Content-Type", "Authorization", "X-Admin-Secret", "X-Request-Id"],
 };
 
+// ============================
+// Express app
+// ============================
+const app = express();
+
 // ✅ Handle preflight quickly (WITH the same options)
 app.options(/.*/, cors(corsOptions));
 
 // ✅ Apply CORS for all routes
 app.use(cors(corsOptions));
-app.options(/.*/, cors());
+
 // --- Security headers ---
 app.use((req, res, next) => {
   // ✅ Only set HSTS in production (only meaningful over HTTPS)
@@ -2675,6 +2611,63 @@ app.use((req, res, next) => {
   next();
 });
 
+// ============================
+// Stripe: start trial checkout (card now, bill in 30 days)
+// ============================
+app.post("/stripe/start-trial-checkout", cors(corsOptions), express.json({ limit: "2mb" }), async (req, res) => {
+  try {
+    if (!stripe) {
+      return res.status(500).json({ ok: false, error: "stripe_not_configured" });
+    }
+
+    const { companyName, adminEmail, jobs, criteria } = req.body || {};
+
+    if (!companyName || !adminEmail) {
+      return res.status(400).json({ ok: false, error: "missing_company_or_email" });
+    }
+
+    const STRIPE_PRICE_ID = safeStr(process.env.STRIPE_PRICE_ID);
+    if (!STRIPE_PRICE_ID) {
+      return res.status(500).json({ ok: false, error: "missing_STRIPE_PRICE_ID" });
+    }
+
+    const signupId = crypto.randomUUID();
+    const payload = {
+      companyName: safeStr(companyName),
+      adminEmail: safeStr(adminEmail),
+      jobs: Array.isArray(jobs) ? jobs : [],
+      criteria: criteria ?? null,
+    };
+
+    await pool.query(
+      `INSERT INTO pending_signups (id, payload_json) VALUES ($1, $2)`,
+      [signupId, JSON.stringify(payload)]
+    );
+
+    const successUrl = `${APP_URL}/signup/success?signupId=${signupId}`;
+    const cancelUrl = `${APP_URL}/signup?canceled=1`;
+
+    const session = await stripe.checkout.sessions.create({
+      mode: "subscription",
+      customer_email: safeStr(adminEmail),
+      line_items: [{ price: STRIPE_PRICE_ID, quantity: 1 }],
+      subscription_data: {
+        trial_period_days: 30,
+        metadata: { signupId },
+      },
+      payment_method_collection: "always",
+      success_url: successUrl,
+      cancel_url: cancelUrl,
+      metadata: { signupId },
+    });
+
+    return res.json({ ok: true, url: session.url, signupId });
+  } catch (err: any) {
+    console.error("STRIPE_START_TRIAL_CHECKOUT_ERR", err?.message || err);
+    return res.status(500).json({ ok: false, error: "stripe_checkout_failed" });
+  }
+});
+
 // --- Correlation IDs + minimal request logging ---
 app.use((req: Request, res: Response, next) => {
   const incoming = safeStr(req.header("X-Request-Id"));
@@ -2682,7 +2675,6 @@ app.use((req: Request, res: Response, next) => {
   (req as any).requestId = requestId;
   res.setHeader("X-Request-Id", requestId);
 
-  // Patch res.json to always include requestId when body is an object
   const oldJson = res.json.bind(res);
   (res as any).json = (body: any) => {
     if (body && typeof body === "object" && !Array.isArray(body) && !("requestId" in body)) {
@@ -2693,7 +2685,6 @@ app.use((req: Request, res: Response, next) => {
 
   const start = Date.now();
   res.on("finish", () => {
-    // keep logs clean: only log webhooks + admin + auth by default, unless DEBUG_REQUEST_LOGS
     const p = safeStr(req.path || "");
     const shouldLog =
       truthyEnv("DEBUG_REQUEST_LOGS") || p.startsWith("/webhooks/") || p.startsWith("/admin/") || p.startsWith("/auth/");
@@ -2702,8 +2693,6 @@ app.use((req: Request, res: Response, next) => {
 
     const ms = Date.now() - start;
     const status = res.statusCode;
-
-    // minimal structured-ish log
     console.log(`[REQ] ${requestId} ${req.method} ${p} ${status} ${ms}ms ip=${safeStr(getClientIp(req))}`);
   });
 
