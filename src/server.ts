@@ -188,6 +188,11 @@ const BILLING_CANCEL_URL = safeStr(process.env.BILLING_CANCEL_URL) || `${APP_URL
 
 const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" as any }) : null;
 
+console.log("STRIPE_KEY_MODE:", {
+  present: !!STRIPE_SECRET_KEY,
+  prefix: STRIPE_SECRET_KEY ? STRIPE_SECRET_KEY.slice(0, 7) : null,
+  hasWebhookSecret: !!STRIPE_WEBHOOK_SECRET,
+});
 // ============================
 // Hardening: simple in-memory rate limiter (no deps)
 // ============================
@@ -2544,10 +2549,16 @@ if (!resolvedCustomerId && toEmail) {
 // Express app
 // ============================
 const app = express();
+// ✅ Parse JSON early (before routes)
+app.use(express.json({ limit: "2mb" }));
+
+// ✅ CORS must be BEFORE routes
+app.options(/.*/, cors(corsOptions));
+app.use(cors(corsOptions));
 // ============================
 // Stripe: start trial checkout (card now, bill in 30 days)
 // ============================
-app.post("/stripe/start-trial-checkout", express.json(), async (req, res) => {
+app.post("/stripe/start-trial-checkout", async (req, res) => {
   try {
     if (!stripe) {
       return res.status(500).json({ ok: false, error: "stripe_not_configured" });
