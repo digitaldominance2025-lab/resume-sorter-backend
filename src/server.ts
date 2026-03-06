@@ -3399,6 +3399,13 @@ app.get("/customers/rubric", async (req: Request, res: Response, next: any) => {
 // ============================
 app.post("/customers/setup", async (req: Request, res: Response, next: any) => {
   try {
+    console.log("🛠️ CUSTOMERS_SETUP_HIT", {
+      body: req.body,
+      contentType: req.header("content-type"),
+      origin: req.header("origin"),
+      requestId: getRequestId(req),
+    });
+   
     // ✅ If coming back from Stripe success page, we pass signupId
     const signupId = safeStr(req.body?.signupId);
 
@@ -3426,6 +3433,13 @@ app.post("/customers/setup", async (req: Request, res: Response, next: any) => {
 
       const d = done?.rows?.[0];
       if (d?.intake_email && d?.sheet_url && d?.manage_url) {
+       console.log("♻️ COMPLETED_SIGNUP_EARLY_RETURN", {
+          signupId,
+          intakeEmail: safeStr(d.intake_email),
+          sheetUrl: safeStr(d.sheet_url),
+          manageUrl: safeStr(d.manage_url),
+          customerId: safeStr(d.customer_id),
+        });
         return res.json({
           ok: true,
           intakeEmail: safeStr(d.intake_email),
@@ -3552,6 +3566,14 @@ if (criteria && typeof criteria === "object") {
     const sheetUrl = tallySheetUrl || `https://docs.google.com/spreadsheets/d/${tallySheetId}`;
     const manageUrl = `${APP_URL}/manage`;
 
+    console.log("📧 ABOUT_TO_SEND_ACTIVATION_EMAIL", {
+      adminEmail: safeStr(adminEmail),
+      companyName: safeStr(companyName),
+      intakeEmail: safeStr(intakeEmail),
+      sheetUrl,
+      manageUrl,
+    });
+    
     // ✅ Send activation email (one email) to the signup/admin email
     let activationEmailSent = false;
     try {
@@ -3596,7 +3618,13 @@ if (criteria && typeof criteria === "object") {
         console.log("⚠️ PENDING_SIGNUP_DELETE_FAILED (continuing):", e?.message || e);
       }
     }
-
+ console.log("📬 SETUP_RESPONSE_DEBUG", {
+      signupId,
+      customerId,
+      adminEmail,
+      intakeEmail,
+      activationEmailSent,
+    });
     return res.json({
       ok: true,
       intakeEmail,

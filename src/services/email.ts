@@ -28,6 +28,13 @@ export async function sendAdminEmail(subject: string, text: string) {
 
 /** Sends an email to an arbitrary recipient (customer). */
 export async function sendCustomerTextEmail(args: { to: string; subject: string; text: string }) {
+ console.log("📧 SEND_CUSTOMER_TEXT_EMAIL_START", {
+    hasResend: !!resend,
+    to: (args?.to || "").trim(),
+    subject: args?.subject,
+    from,
+    hasApiKey: !!apiKey
+  });
   if (!resend) throw new Error("Email disabled: RESEND_API_KEY missing/invalid.");
 
   const to = (args?.to || "").trim();
