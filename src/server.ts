@@ -2560,7 +2560,7 @@ app.use(cors(corsOptions));
 // ============================
 // Stripe: start trial checkout (card now, bill in 30 days)
 // ============================
-app.post("/stripe/start-trial-checkout", async (req, res) => {
+app.post("/stripe/start-trial-checkout", cors(corsOptions), async (req, res) => {
   try {
     if (!stripe) {
       return res.status(500).json({ ok: false, error: "stripe_not_configured" });
