@@ -40,12 +40,14 @@ export async function sendCustomerTextEmail(args: { to: string; subject: string;
   const to = (args?.to || "").trim();
   if (!to) throw new Error("Missing recipient email (to).");
 
-  await resend.emails.send({
+const result = await resend.emails.send({
     from,
     to,
     subject: args.subject,
     text: args.text,
   });
+
+  console.log("📧 RESEND_RESULT", result);
 }
 
 /** Alias so server code can call a common name */
