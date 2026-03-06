@@ -3488,7 +3488,7 @@ app.post("/customers/setup", async (req: Request, res: Response, next: any) => {
 if (criteria && typeof criteria === "object") {
   await upsertCustomerRubric(customerId, criteria);
 }
-    const intakeEmail = `${slug}@goeasypaper.com`;
+    const intakeEmail = `${slug}@resume.digitaldominance2025.ca`;
 
     const nowLocal = toZonedTime(new Date(), TIMEZONE);
     const trialStartAt = formatISO(nowLocal, { representation: "date" });
