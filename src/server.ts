@@ -2555,7 +2555,7 @@ app.options(/.*/, cors(corsOptions));
 app.use(cors(corsOptions));
 
 // ✅ Then parse JSON
-app.use(express.json({ limit: "2mb" }));
+
 
 // ============================
 // Stripe: start trial checkout (card now, bill in 30 days)
