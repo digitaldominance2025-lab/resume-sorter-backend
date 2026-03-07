@@ -3563,8 +3563,8 @@ if (criteria && typeof criteria === "object") {
 
     invalidateCustomersCache();
 
-    const sheetUrl = tallySheetUrl || `https://docs.google.com/spreadsheets/d/${tallySheetId}`;
-    const manageUrl = `${APP_URL}/manage`;
+        const sheetUrl = tallySheetUrl || `https://docs.google.com/spreadsheets/d/${tallySheetId}`;
+    const manageUrl = `${APP_URL}/manage?customerId=${encodeURIComponent(customerId)}`;
 
     console.log("📧 ABOUT_TO_SEND_ACTIVATION_EMAIL", {
       adminEmail: safeStr(adminEmail),
@@ -3574,19 +3574,55 @@ if (criteria && typeof criteria === "object") {
       manageUrl,
     });
     
-    // ✅ Send activation email (one email) to the signup/admin email
+        // ✅ Send activation email (one email) to the signup/admin email
     let activationEmailSent = false;
     try {
-      await (emailSvc as any).sendCustomerTextEmail({
-        to: safeStr(adminEmail),
-        subject: `Your trial is live — ${companyName}`,
-        text:
-          `You're live.\n\n` +
-          `Intake email:\n${intakeEmail}\n\n` +
-          `Your sheet:\n${sheetUrl}\n\n` +
-          `Manage jobs:\n${manageUrl}\n\n` +
-          `Send job ads + resumes to that intake email. We'll score + sort them into your sheet automatically.\n`,
-      });
+      const activationHtml = `
+        <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;background:#fff;color:#111;padding:24px;">
+          <div style="max-width:640px;margin:0 auto;">
+            <h2 style="margin:0 0 10px 0;font-size:22px;line-height:1.2;">
+              Your trial is live — ${companyName}
+            </h2>
+
+            <p style="margin:0 0 16px 0;color:#333;font-size:14px;line-height:1.5;">
+              You're live.
+            </p>
+
+            <p style="margin:0 0 10px 0;color:#333;font-size:14px;line-height:1.5;">
+              <strong>Intake email:</strong><br/>
+              ${intakeEmail}
+            </p>
+
+            <div style="display:flex;gap:12px;flex-wrap:wrap;margin:20px 0 14px 0;">
+              <a href="${sheetUrl}"
+                 style="display:inline-block;padding:14px 18px;border-radius:10px;text-decoration:none;font-weight:700;font-size:14px;background:#B11226;color:#fff;">
+                Open Your Sheet
+              </a>
+
+              <a href="${manageUrl}"
+                 style="display:inline-block;padding:14px 18px;border-radius:10px;text-decoration:none;font-weight:700;font-size:14px;background:#111;color:#fff;">
+                Manage Jobs
+              </a>
+            </div>
+
+            <p style="margin:16px 0 0 0;color:#333;font-size:14px;line-height:1.5;">
+              Send job ads + resumes to that intake email. We'll score + sort them into your sheet automatically.
+            </p>
+
+            <p style="margin:16px 0 0 0;color:#666;font-size:12px;line-height:1.45;">
+              If a button doesn’t work, copy/paste these links:
+              <br/>Sheet: ${sheetUrl}
+              <br/>Manage Jobs: ${manageUrl}
+            </p>
+
+            <div style="margin-top:18px;color:#888;font-size:12px;">
+              – EasyPaper
+            </div>
+          </div>
+        </div>
+      `.trim();
+
+      await sendCustomerText(safeStr(adminEmail), `Your trial is live — ${companyName}`, activationHtml);
       activationEmailSent = true;
     } catch (e: any) {
       console.log("📧 ACTIVATION_EMAIL_FAILED (continuing):", e?.message || e);
@@ -4146,11 +4182,11 @@ if (isEnded) {
       if (!gate.allowed) continue;
 
       const sheetUrl = `https://docs.google.com/spreadsheets/d/${sheetId}`;
-      const manageJobsUrl = `${BASE_URL}/manage`;
+      const customerId = safeStr(c.customerId);
+      const manageJobsUrl = `${BASE_URL}/manage?customerId=${encodeURIComponent(customerId)}`;
 
       const subject = "Your updated resume sheet is ready";
-
-      const html = `
+        const html = `
         <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;background:#fff;color:#111;padding:24px;">
           <div style="max-width:640px;margin:0 auto;">
             <h2 style="margin:0 0 10px 0;font-size:22px;line-height:1.2;">
