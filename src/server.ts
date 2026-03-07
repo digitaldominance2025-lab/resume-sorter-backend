@@ -128,9 +128,9 @@ const NODE_ENV = safeStr(process.env.NODE_ENV).toLowerCase();
 const IS_PROD = NODE_ENV === "production";
 const BASE_URL =
   safeStr(process.env.BASE_URL) ||
-  (IS_PROD ? "https://digitaldominance2025.ca" : "http://localhost:3000");
+  (IS_PROD ? "https://goeasypaper.com" : "http://localhost:3000");
 
-const ADMIN_EMAIL = process.env.ADMIN_EMAIL || "digitaldominance2025@gmail.com";
+  const ADMIN_EMAIL = process.env.ADMIN_EMAIL || "digitaldominance2025@gmail.com";
 const MASTER_SHEET_ID = process.env.MASTER_CUSTOMERS_SHEET_ID || "";
 const MASTER_SHEET_TAB = process.env.MASTER_CUSTOMERS_SHEET_TAB || "customers";
 const NIGHTLY_CRON = process.env.NIGHTLY_CRON || "10 2 * * *";
@@ -1455,6 +1455,62 @@ async function tallyApply(
 // ============================
 // Job-Section Sheet Engine (vertical left layout)
 // ============================
+async function colorDecisionCell(args: {
+  spreadsheetId: string;
+  sheetId: number;
+  rowIndex0: number; // 0-based
+  decision?: string | null;
+}) {
+  const sheets = google.sheets({ version: "v4", auth: oauth2Client });
+
+  const decision = safeStr(args.decision).toUpperCase();
+
+  let backgroundColor = { red: 1, green: 1, blue: 1 };
+  let foregroundColor = { red: 0, green: 0, blue: 0 };
+
+  if (decision === "CALL") {
+    backgroundColor = { red: 0.72, green: 0.90, blue: 0.75 };
+    foregroundColor = { red: 0.10, green: 0.35, blue: 0.16 };
+  } else if (decision === "MAYBE") {
+    backgroundColor = { red: 1.00, green: 0.95, blue: 0.67 };
+    foregroundColor = { red: 0.45, green: 0.33, blue: 0.00 };
+  } else if (decision === "NO") {
+    backgroundColor = { red: 0.95, green: 0.82, blue: 0.82 };
+    foregroundColor = { red: 0.45, green: 0.10, blue: 0.10 };
+  } else {
+    return;
+  }
+
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: args.spreadsheetId,
+    requestBody: {
+      requests: [
+        {
+          repeatCell: {
+            range: {
+              sheetId: args.sheetId,
+              startRowIndex: args.rowIndex0,
+              endRowIndex: args.rowIndex0 + 1,
+              startColumnIndex: 4, // column E = decision
+              endColumnIndex: 5,
+            },
+            cell: {
+              userEnteredFormat: {
+                backgroundColor,
+                textFormat: {
+                  bold: true,
+                  foregroundColor,
+                },
+                horizontalAlignment: "CENTER",
+              },
+            },
+            fields: "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
+          },
+        },
+      ],
+    },
+  });
+}
 // Visual markers in the sheet so we can reliably find sections
 const JOB_HEADER_PREFIX = "JOB:";
 
@@ -1578,16 +1634,107 @@ async function appendJobSectionAtBottom(spreadsheetId: string, jobTitle: string)
 
   if (hasAny) sectionRows.push(["", "", "", "", "", "", "", "", ""]); // spacer (9 cols)
 
-sectionRows.push([jobHeaderCell(jobTitle), "", "", "", "", "", "", "", ""]); // job header row (9 cols)
-sectionRows.push([...RESUME_COL_HEADERS]); // column headers row (must be 9 cols)
+  sectionRows.push([jobHeaderCell(jobTitle), "", "", "", "", "", "", "", ""]); // job header row (9 cols)
+  sectionRows.push([...RESUME_COL_HEADERS]); // column headers row (must be 9 cols)
+    // Format the column header row (dark gray background, white bold text)
+const headerValues = await readResumesTabValues(spreadsheetId);
+const headerStart0 = findJobSectionStart(headerValues, jobTitle);
 
-await sheets.spreadsheets.values.append({
-  spreadsheetId,
-  range: `${TAB}!A:I`,
-  valueInputOption: "RAW",
-  insertDataOption: "INSERT_ROWS",
-  requestBody: { values: sectionRows },
-});
+if (headerStart0 !== -1) {
+  const sheetId = await getSheetIdByTitle(spreadsheetId, TAB);
+
+  if (sheetId !== null) {
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId,
+      requestBody: {
+        requests: [
+          {
+            repeatCell: {
+              range: {
+                sheetId,
+                startRowIndex: headerStart0 + 1, // column header row
+                endRowIndex: headerStart0 + 2,
+                startColumnIndex: 0,
+                endColumnIndex: 9,
+              },
+              cell: {
+                userEnteredFormat: {
+                  backgroundColor: {
+                    red: 0.2,
+                    green: 0.2,
+                    blue: 0.2,
+                  },
+                  textFormat: {
+                    bold: true,
+                    foregroundColor: {
+                      red: 1,
+                      green: 1,
+                      blue: 1,
+                    },
+                  },
+                  horizontalAlignment: "CENTER",
+                },
+              },
+              fields: "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
+            },
+          },
+        ],
+      },
+    });
+  }
+}
+  await sheets.spreadsheets.values.append({
+    spreadsheetId,
+    range: `${TAB}!A:I`,
+    valueInputOption: "RAW",
+    insertDataOption: "INSERT_ROWS",
+    requestBody: { values: sectionRows },
+  });
+
+  // Color the JOB header row red with white bold text
+  const updatedValues = await readResumesTabValues(spreadsheetId);
+  const start0 = findJobSectionStart(updatedValues, jobTitle);
+
+  if (start0 !== -1) {
+    const sheetId = await getSheetIdByTitle(spreadsheetId, TAB);
+
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId,
+      requestBody: {
+        requests: [
+          {
+            repeatCell: {
+              range: {
+                sheetId,
+                startRowIndex: start0,
+                endRowIndex: start0 + 1,
+                startColumnIndex: 0,
+                endColumnIndex: 9,
+              },
+              cell: {
+                userEnteredFormat: {
+                  backgroundColor: {
+                    red: 0.75,
+                    green: 0.10,
+                    blue: 0.10,
+                  },
+                  textFormat: {
+                    bold: true,
+                    foregroundColor: {
+                      red: 1,
+                      green: 1,
+                      blue: 1,
+                    },
+                  },
+                },
+              },
+              fields: "userEnteredFormat(backgroundColor,textFormat)",
+            },
+          },
+        ],
+      },
+    });
+  }
 }
 
 async function ensureJobSectionExists(spreadsheetId: string, jobTitle: string): Promise<void> {
@@ -1650,9 +1797,17 @@ async function appendResumeUnderJobSection(args: {
     }
     insertAt0 = i + 1;
   }
+   const sheetId = await getSheetIdByTitle(args.spreadsheetId, TAB);
 
-  const sheetId = await getSheetIdByTitle(args.spreadsheetId, TAB);
-
+   if (sheetId !== null) {
+   await colorDecisionCell({
+    spreadsheetId: args.spreadsheetId,
+    sheetId,
+    rowIndex0: insertAt0,
+    decision: args.row.decision,
+  });
+}
+  
   // If we can't resolve sheetId, fall back to values.append at bottom (safe)
   if (sheetId == null) {
   await sheets.spreadsheets.values.append({
@@ -3531,7 +3686,7 @@ app.post("/customers/setup", async (req: Request, res: Response, next: any) => {
 if (criteria && typeof criteria === "object") {
   await upsertCustomerRubric(customerId, criteria);
 }
-    const intakeEmail = `${slug}@resume.digitaldominance2025.ca`;
+    const intakeEmail = `${slug}@goeasypaper.com`;
 
     const nowLocal = toZonedTime(new Date(), TIMEZONE);
     const trialStartAt = formatISO(nowLocal, { representation: "date" });
@@ -3551,7 +3706,10 @@ if (criteria && typeof criteria === "object") {
     if (!tallySheetId) {
       throw new Error("Missing tallySheetId from createTallySheetForCustomer");
     }
-
+   // Share the sheet with the customer so they can open it immediately
+     if (adminEmail) {
+    await ensureSheetSharedOnce(tallySheetId, adminEmail);
+}
     // 🔒 Enforce single-sheet job layout (no extra tabs, jobs down left)
     await ensureResumesTab(tallySheetId);
 

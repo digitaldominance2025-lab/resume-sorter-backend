@@ -10,7 +10,7 @@ if (apiKey && apiKey.startsWith("re_")) {
   console.warn("⚠️ RESEND_API_KEY missing/invalid. Email sending disabled until set.");
 }
 
-const from = process.env.EMAIL_FROM || "Digital Dominance <onboarding@resend.dev>";
+const from = process.env.EMAIL_FROM || "EasyPaper <onboarding@resend.dev>";
 const admin = process.env.ADMIN_REPORT_EMAIL || process.env.ADMIN_EMAIL || "";
 
 /** Sends an email to your admin/report address (ADMIN_REPORT_EMAIL or ADMIN_EMAIL). */
