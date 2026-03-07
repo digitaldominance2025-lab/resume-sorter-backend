@@ -3351,7 +3351,20 @@ app.post("/customers/jobs/create", async (req: Request, res: Response, next: any
       return res.status(400).json({ ok: false, error: "missing_rubric" });
     }
 
-    const job = await createCustomerJob(customerId, title, rubric);
+        const job = await createCustomerJob(customerId, title, rubric);
+
+    try {
+      const customers = await getCustomersCached();
+      const c = customers.find((x) => x.customerId === customerId);
+      const tallySheetId = safeStr(c?.tallySheetId || "");
+
+      if (tallySheetId) {
+        await ensureJobSectionExists(tallySheetId, title);
+      }
+    } catch (e: any) {
+      console.log("⚠️ JOB_SECTION_CREATE_FROM_MANAGE_FAILED (continuing):", title, e?.message || e);
+    }
+
     return res.json({ ok: true, job });
   } catch (e: any) {
     return next(e);
@@ -3546,8 +3559,14 @@ if (criteria && typeof criteria === "object") {
     await ensureJobSectionExists(tallySheetId, "Unsorted");
     await ensureJobSectionExists(tallySheetId, "General Submissions");
 
-    // Ensure customer job sections (if provided)
+       // Ensure customer job sections (if provided) + persist jobs so Manage Jobs can list them
     for (const j of jobsFromPayload) {
+      try {
+        await createCustomerJob(customerId, j, {});
+      } catch (e: any) {
+        console.log("⚠️ JOB_CREATE_FROM_SIGNUP_FAILED (continuing):", j, e?.message || e);
+      }
+
       try {
         await ensureJobSectionExists(tallySheetId, j);
       } catch (e: any) {
