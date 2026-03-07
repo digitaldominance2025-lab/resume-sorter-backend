@@ -1491,8 +1491,8 @@ async function colorDecisionCell(args: {
               sheetId: args.sheetId,
               startRowIndex: args.rowIndex0,
               endRowIndex: args.rowIndex0 + 1,
-              startColumnIndex: 4, // column E = decision
-              endColumnIndex: 5,
+              startColumnIndex: 2, // column E = decision
+              endColumnIndex: 3,
             },
             cell: {
               userEnteredFormat: {
@@ -1661,7 +1661,7 @@ async function appendJobSectionAtBottom(spreadsheetId: string, jobTitle: string)
                   startRowIndex: start0 + 1,
                   endRowIndex: start0 + 2,
                   startColumnIndex: 0,
-                  endColumnIndex: 9,
+                  endColumnIndex: 5,
                 },
                 cell: {
                   userEnteredFormat: {
@@ -1693,7 +1693,7 @@ async function appendJobSectionAtBottom(spreadsheetId: string, jobTitle: string)
                   startRowIndex: start0,
                   endRowIndex: start0 + 1,
                   startColumnIndex: 0,
-                  endColumnIndex: 9,
+                  endColumnIndex: 5,
                 },
                 cell: {
                   userEnteredFormat: {
@@ -1865,25 +1865,31 @@ await colorDecisionCell({
   rowIndex0: insertAt0,
   decision: args.row.decision,
 });
-
-// Auto resize columns so text is readable
-await sheets.spreadsheets.batchUpdate({
+  await sheets.spreadsheets.batchUpdate({
   spreadsheetId: args.spreadsheetId,
   requestBody: {
     requests: [
       {
-        autoResizeDimensions: {
-          dimensions: {
+        updateDimensionProperties: {
+          range: {
             sheetId,
             dimension: "COLUMNS",
-            startIndex: 0,
-            endIndex: 5,
+            startIndex: 3, // column D = Summary
+            endIndex: 4,
           },
+          properties: {
+            pixelSize: 320,
+          },
+          fields: "pixelSize",
         },
       },
     ],
   },
 });
+  
+
+// Auto resize columns so text is readable
+
 
 devLog("🧩 RESUME_APPENDED_UNDER_JOB:", args.spreadsheetId, args.jobTitle, { rowNumber });
 }
