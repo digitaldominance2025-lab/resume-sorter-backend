@@ -3639,12 +3639,6 @@ if (criteria && typeof criteria === "object") {
               Send job ads + resumes to that intake email. We'll score + sort them into your sheet automatically.
             </p>
 
-            <p style="margin:16px 0 0 0;color:#666;font-size:12px;line-height:1.45;">
-              If a button doesn’t work, copy/paste these links:
-              <br/>Sheet: ${sheetUrl}
-              <br/>Manage Jobs: ${manageUrl}
-            </p>
-
             <div style="margin-top:18px;color:#888;font-size:12px;">
               – EasyPaper
             </div>
