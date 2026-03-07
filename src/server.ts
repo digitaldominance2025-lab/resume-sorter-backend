@@ -1636,53 +1636,7 @@ async function appendJobSectionAtBottom(spreadsheetId: string, jobTitle: string)
 
   sectionRows.push([jobHeaderCell(jobTitle), "", "", "", "", "", "", "", ""]); // job header row (9 cols)
   sectionRows.push([...RESUME_COL_HEADERS]); // column headers row (must be 9 cols)
-    // Format the column header row (dark gray background, white bold text)
-const headerValues = await readResumesTabValues(spreadsheetId);
-const headerStart0 = findJobSectionStart(headerValues, jobTitle);
 
-if (headerStart0 !== -1) {
-  const sheetId = await getSheetIdByTitle(spreadsheetId, TAB);
-
-  if (sheetId !== null) {
-    await sheets.spreadsheets.batchUpdate({
-      spreadsheetId,
-      requestBody: {
-        requests: [
-          {
-            repeatCell: {
-              range: {
-                sheetId,
-                startRowIndex: headerStart0 + 1, // column header row
-                endRowIndex: headerStart0 + 2,
-                startColumnIndex: 0,
-                endColumnIndex: 9,
-              },
-              cell: {
-                userEnteredFormat: {
-                  backgroundColor: {
-                    red: 0.2,
-                    green: 0.2,
-                    blue: 0.2,
-                  },
-                  textFormat: {
-                    bold: true,
-                    foregroundColor: {
-                      red: 1,
-                      green: 1,
-                      blue: 1,
-                    },
-                  },
-                  horizontalAlignment: "CENTER",
-                },
-              },
-              fields: "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
-            },
-          },
-        ],
-      },
-    });
-  }
-}
   await sheets.spreadsheets.values.append({
     spreadsheetId,
     range: `${TAB}!A:I`,
@@ -1691,52 +1645,86 @@ if (headerStart0 !== -1) {
     requestBody: { values: sectionRows },
   });
 
-  // Color the JOB header row red with white bold text
+  // Re-read AFTER append so row indexes are real
   const updatedValues = await readResumesTabValues(spreadsheetId);
   const start0 = findJobSectionStart(updatedValues, jobTitle);
 
   if (start0 !== -1) {
     const sheetId = await getSheetIdByTitle(spreadsheetId, TAB);
 
-    await sheets.spreadsheets.batchUpdate({
-      spreadsheetId,
-      requestBody: {
-        requests: [
-          {
-            repeatCell: {
-              range: {
-                sheetId,
-                startRowIndex: start0,
-                endRowIndex: start0 + 1,
-                startColumnIndex: 0,
-                endColumnIndex: 9,
-              },
-              cell: {
-                userEnteredFormat: {
-                  backgroundColor: {
-                    red: 0.75,
-                    green: 0.10,
-                    blue: 0.10,
+    if (sheetId !== null) {
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId,
+        requestBody: {
+          requests: [
+            // Format the column header row (dark gray background, white bold text)
+            {
+              repeatCell: {
+                range: {
+                  sheetId,
+                  startRowIndex: start0 + 1,
+                  endRowIndex: start0 + 2,
+                  startColumnIndex: 0,
+                  endColumnIndex: 9,
+                },
+                cell: {
+                  userEnteredFormat: {
+                    backgroundColor: {
+                      red: 0.2,
+                      green: 0.2,
+                      blue: 0.2,
+                    },
+                    textFormat: {
+                      bold: true,
+                      foregroundColor: {
+                        red: 1,
+                        green: 1,
+                        blue: 1,
+                      },
+                    },
+                    horizontalAlignment: "CENTER",
                   },
-                  textFormat: {
-                    bold: true,
-                    foregroundColor: {
-                      red: 1,
-                      green: 1,
-                      blue: 1,
+                },
+                fields: "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
+              },
+            },
+
+            // Color the JOB header row red with white bold text
+            {
+              repeatCell: {
+                range: {
+                  sheetId,
+                  startRowIndex: start0,
+                  endRowIndex: start0 + 1,
+                  startColumnIndex: 0,
+                  endColumnIndex: 9,
+                },
+                cell: {
+                  userEnteredFormat: {
+                    backgroundColor: {
+                      red: 0.75,
+                      green: 0.10,
+                      blue: 0.10,
+                    },
+                    textFormat: {
+                      bold: true,
+                      foregroundColor: {
+                        red: 1,
+                        green: 1,
+                        blue: 1,
+                      },
                     },
                   },
                 },
+                fields: "userEnteredFormat(backgroundColor,textFormat)",
               },
-              fields: "userEnteredFormat(backgroundColor,textFormat)",
             },
-          },
-        ],
-      },
-    });
+          ],
+        },
+      });
+    }
   }
 }
-
 async function ensureJobSectionExists(spreadsheetId: string, jobTitle: string): Promise<void> {
   await ensureResumesTab(spreadsheetId);
 
@@ -1836,7 +1824,7 @@ await sheets.spreadsheets.batchUpdate({
             startIndex: insertAt0,
             endIndex: insertAt0 + 1,
           },
-          inheritFromBefore: true,
+          inheritFromBefore: false,
         },
       },
     ],
@@ -1845,22 +1833,40 @@ await sheets.spreadsheets.batchUpdate({
 
 // Write the resume row into that inserted row
 const rowNumber = insertAt0 + 1; // 1-based for A1 notation
+
+const rowValues = [[
+  args.row.receivedAt,
+  args.row.source,
+  args.row.filename,
+  args.row.score ?? "",
+  (args.row as any).decision ?? "",
+  args.row.summary || "",
+  args.row.r2Key || "",
+  args.row.resumeLink || "",
+  args.row.requestId || "",
+]];
+
+console.log("🧪 SHEET_WRITE_DEBUG", {
+  spreadsheetId: args.spreadsheetId,
+  jobTitle: args.jobTitle,
+  insertAt0,
+  rowNumber,
+  rowValues: rowValues[0],
+});
+
+// Clear target row first so weird inherited content/formatting doesn't survive
+await sheets.spreadsheets.values.clear({
+  spreadsheetId: args.spreadsheetId,
+  range: `${TAB}!A${rowNumber}:I${rowNumber}`,
+});
+
+// Now write clean values
 await sheets.spreadsheets.values.update({
   spreadsheetId: args.spreadsheetId,
   range: `${TAB}!A${rowNumber}:I${rowNumber}`,
   valueInputOption: "RAW",
   requestBody: {
-    values: [[
-      args.row.receivedAt,
-      args.row.source,
-      args.row.filename,
-      args.row.score ?? "",
-      (args.row as any).decision ?? "",
-      args.row.summary || "",
-      args.row.r2Key || "",
-      args.row.resumeLink || "",
-      args.row.requestId || "",
-    ]],
+    values: rowValues,
   },
 });
 
@@ -1871,8 +1877,8 @@ await colorDecisionCell({
   rowIndex0: insertAt0,
   decision: args.row.decision,
 });
-  
-  devLog("🧩 RESUME_APPENDED_UNDER_JOB:", args.spreadsheetId, args.jobTitle, { rowNumber });
+
+devLog("🧩 RESUME_APPENDED_UNDER_JOB:", args.spreadsheetId, args.jobTitle, { rowNumber });
 }
 async function ensureSheetTabExists(spreadsheetId: string, title: string) {
   const sheets = google.sheets({ version: "v4", auth: oauth2Client });
@@ -1901,43 +1907,23 @@ async function ensureSheetTabExists(spreadsheetId: string, title: string) {
 // line above (keep whatever you already have above)
 
 async function ensureResumesTab(spreadsheetId: string) {
-  const sheets = google.sheets({ version: "v4", auth: oauth2Client });
   const TAB = "Resumes";
 
-  // ✅ ONE TAB ONLY (Resumes): enforce before touching headers
+  // Enforce single-tab layout first
   await ensureSingleTabResumes(spreadsheetId);
 
-  const headerResp = await sheets.spreadsheets.values.get({
-    spreadsheetId,
-    range: `${TAB}!A1:H1`,
-  });
+  // If already has any content, leave it alone
+  const values = await readResumesTabValues(spreadsheetId);
+  const hasAnyContent = values.some((r) => r.some((c) => safeStr(c)));
 
-  const existing = headerResp.data.values?.[0] || [];
-  if (existing.length > 0) {
+  if (hasAnyContent) {
     devLog("✅ RESUMES_TAB_INITIALIZED_SINGLE_TAB:", spreadsheetId);
     return;
   }
 
- await sheets.spreadsheets.values.update({
-  spreadsheetId,
-  range: `${TAB}!A1:I1`,
-  valueInputOption: "RAW",
-  requestBody: {
-    values: [
-      [
-        "receivedAt",
-        "source",
-        "filename",
-        "score",
-        "decision",
-        "summary",
-        "r2Key",
-        "resumeLink",
-        "requestId",
-      ],
-    ],
-  },
-});
+  // Create baseline sections directly (no recursion through ensureJobSectionExists)
+  await appendJobSectionAtBottom(spreadsheetId, "Unsorted");
+  await appendJobSectionAtBottom(spreadsheetId, "General Submissions");
 
   devLog("✅ RESUMES_TAB_INITIALIZED:", spreadsheetId);
 }
@@ -1973,6 +1959,13 @@ async function appendGeneralSubmissionRow(
   await ensureJobSectionExists(spreadsheetId, "General Submissions");
 
   // Append using the SAME row schema as resumes, but with score=null and summary=reason
+console.log("🧪 GENERAL_SUBMISSIONS_DEBUG", {
+  spreadsheetId,
+  requestId: row.requestId,
+  filename: row.filename,
+  reason: row.reason,
+  r2Key: row.r2Key,
+});
   await appendResumeUnderJobSection({
     spreadsheetId,
     jobTitle: "General Submissions",
@@ -2061,14 +2054,7 @@ async function createTallySheetForCustomer(companyName: string, customerId: stri
   if (!spreadsheetId) throw new Error("tally_sheet_create_failed");
 
   // A date, B count, C notes, D customerId, E latest r2Key, F fileLink, G r2Keys csv, H lastScore
-  await sheets.spreadsheets.values.update({
-    spreadsheetId,
-    range: "A1:H1",
-    valueInputOption: "RAW",
-    requestBody: {
-      values: [["date", "resumesProcessed", "notes", "customerId", "r2Key", "resumeFile", "r2Keys", "lastScore"]],
-    },
-  });
+
 
   // Share with admin + current authed account (best effort)
   if (ADMIN_EMAIL) await ensureSheetSharedOnce(spreadsheetId, ADMIN_EMAIL);
@@ -3019,6 +3005,12 @@ app.post(
       }
 
       const type = safeStr(evt?.type);
+      console.log("🧪 RESEND_WEBHOOK_VERIFIED", {
+       type,
+      emailId: safeStr(evt?.data?.id || evt?.data?.email_id),
+      dataKeys: Object.keys(evt?.data || {}),
+      requestId: getRequestId(req),
+      }); 
       const emailId = safeStr(evt?.data?.id || evt?.data?.email_id);
 
       logInfo("RESEND_VERIFIED_EVENT", {
@@ -3041,6 +3033,17 @@ app.post(
       if (!toEmail) return res.json({ ok: true, fetched: true, processed: false, reason: "missing_to" });
 
       const atts = await resendListReceivedAttachments(emailId);
+      console.log("🧪 RESEND_ATTACHMENTS", {
+  emailId,
+  toEmail,
+  attachmentCount: atts.length,
+  attachments: atts.map((a: any) => ({
+    id: safeStr(a?.id),
+    filename: safeStr(a?.filename),
+    size: Number(a?.size || 0),
+    hasDownloadUrl: !!safeStr(a?.download_url),
+  })),
+});
       const processed: any[] = [];
 
       if (atts.length) {
