@@ -755,7 +755,37 @@ async function sendCustomerText(to: string, subject: string, text: string) {
     console.log("⚠️ sendCustomerText failed (continuing):", e?.message || e);
   }
 }
+async function sendCustomerHtml(to: string, subject: string, html: string) {
+  const svc: any = emailSvc as any;
+  const candidates = [
+    svc.sendHtmlEmail,
+    svc.sendEmailHtml,
+    svc.sendCustomerHtmlEmail,
+    svc.sendCustomerEmail,
+    svc.sendEmail,
+  ].filter((fn: any) => typeof fn === "function");
 
+  if (!candidates.length) {
+    console.log("ℹ️ No customer HTML email function found in emailSvc; skipping.", { to, subject });
+    return;
+  }
+
+  const fn = candidates[0];
+
+  try {
+    if (fn.length === 1) {
+      await fn({ to, subject, html });
+      return;
+    }
+    if (fn.length >= 3) {
+      await fn(to, subject, html);
+      return;
+    }
+    await fn({ to, subject, html });
+  } catch (e: any) {
+    console.log("⚠️ sendCustomerHtml failed (continuing):", e?.message || e);
+  }
+}
 // ============================
 // Customer utilities
 // ============================
@@ -3622,13 +3652,13 @@ if (criteria && typeof criteria === "object") {
         </div>
       `.trim();
 
-      await sendCustomerText(safeStr(adminEmail), `Your trial is live — ${companyName}`, activationHtml);
+      await sendCustomerHtml(safeStr(adminEmail), `Your trial is live — ${companyName}`, activationHtml);
       activationEmailSent = true;
     } catch (e: any) {
       console.log("📧 ACTIVATION_EMAIL_FAILED (continuing):", e?.message || e);
     }
 
-        // ✅ Mark signup complete (idempotency) + then delete pending row
+             // ✅ Mark signup complete (idempotency) + then delete pending row
     if (signupId) {
       try {
         // Save the “final answer” so success-page refresh never duplicates work

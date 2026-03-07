@@ -52,3 +52,30 @@ const result = await resend.emails.send({
 
 /** Alias so server code can call a common name */
 export const sendTextEmail = sendCustomerTextEmail;
+/** Sends an HTML email to a customer */
+export async function sendCustomerHtmlEmail(args: { to: string; subject: string; html: string }) {
+  console.log("📧 SEND_CUSTOMER_HTML_EMAIL_START", {
+    hasResend: !!resend,
+    to: (args?.to || "").trim(),
+    subject: args?.subject,
+    from,
+    hasApiKey: !!apiKey
+  });
+
+  if (!resend) throw new Error("Email disabled: RESEND_API_KEY missing/invalid.");
+
+  const to = (args?.to || "").trim();
+  if (!to) throw new Error("Missing recipient email (to).");
+
+  const result = await resend.emails.send({
+    from,
+    to,
+    subject: args.subject,
+    html: args.html,
+  });
+
+  console.log("📧 RESEND_HTML_RESULT", result);
+}
+
+/** Alias so server code can call a common name */
+export const sendHtmlEmail = sendCustomerHtmlEmail;
