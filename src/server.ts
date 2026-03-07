@@ -1516,15 +1516,11 @@ const JOB_HEADER_PREFIX = "JOB:";
 
 // Columns for the resume rows (kept consistent everywhere)
 const RESUME_COL_HEADERS = [
-  "receivedAt",
-  "source",
-  "filename",
-  "score",
-  "decision",
-  "summary",
-  "r2Key",
-  "resumeLink",
-  "requestId",
+  "Date Received",
+  "Score",
+  "Decision",
+  "Summary",
+  "Link",
 ];
 
 // ✅ ONE TAB ONLY: rename first tab to "Resumes" and delete all others
@@ -1632,9 +1628,9 @@ async function appendJobSectionAtBottom(spreadsheetId: string, jobTitle: string)
 
   const sectionRows: any[] = [];
 
-  if (hasAny) sectionRows.push(["", "", "", "", "", "", "", "", ""]); // spacer (9 cols)
+  if (hasAny) sectionRows.push(["", "", "", "", ""]); // spacer (5 cols)
 
-  sectionRows.push([jobHeaderCell(jobTitle), "", "", "", "", "", "", "", ""]); // job header row (9 cols)
+  sectionRows.push([jobHeaderCell(jobTitle), "", "", "", ""]); // job header row (5 cols)
   sectionRows.push([...RESUME_COL_HEADERS]); // column headers row (must be 9 cols)
 
   await sheets.spreadsheets.values.append({
@@ -1791,17 +1787,16 @@ async function appendResumeUnderJobSection(args: {
 if (sheetId == null) {
   await sheets.spreadsheets.values.append({
   spreadsheetId: args.spreadsheetId,
-  range: `${TAB}!A:F`,
+  range: `${TAB}!A:E`,
   valueInputOption: "RAW",
   insertDataOption: "INSERT_ROWS",
   requestBody: {
     values: [[
       args.row.receivedAt,
       args.row.score ?? "",
-      (args.row as any).decision ?? "",
+      args.row.decision ?? "",
       args.row.summary || "",
       args.row.resumeLink || "",
-      args.row.requestId || "",
     ]],
   },
 });
@@ -1834,10 +1829,9 @@ const rowNumber = insertAt0 + 1; // 1-based for A1 notation
 const rowValues = [[
   args.row.receivedAt,
   args.row.score ?? "",
-  (args.row as any).decision ?? "",
+  args.row.decision ?? "",
   args.row.summary || "",
   args.row.resumeLink || "",
-  args.row.requestId || "",
 ]];
 
 console.log("🧪 SHEET_WRITE_DEBUG", {
@@ -1851,13 +1845,13 @@ console.log("🧪 SHEET_WRITE_DEBUG", {
 // Clear target row first so weird inherited content/formatting doesn't survive
 await sheets.spreadsheets.values.clear({
   spreadsheetId: args.spreadsheetId,
-  range: `${TAB}!A${rowNumber}:F${rowNumber}`,
+  range: `${TAB}!A${rowNumber}:E${rowNumber}`,
 });
 
 // Now write clean values
 await sheets.spreadsheets.values.update({
   spreadsheetId: args.spreadsheetId,
-  range: `${TAB}!A${rowNumber}:F${rowNumber}`,
+  range: `${TAB}!A${rowNumber}:E${rowNumber}`,
   valueInputOption: "RAW",
   requestBody: {
     values: rowValues,
@@ -1883,7 +1877,7 @@ await sheets.spreadsheets.batchUpdate({
             sheetId,
             dimension: "COLUMNS",
             startIndex: 0,
-            endIndex: 6,
+            endIndex: 5,
           },
         },
       },
@@ -2217,14 +2211,60 @@ async function processInboundDoc(args: {
   // Hardening Step 2: cap extraction size
   const extractedTooLarge = extractedTextRaw.length > MAX_EXTRACTED_CHARS;
   const extractedText = extractedTooLarge ? extractedTextRaw.slice(0, MAX_EXTRACTED_CHARS) : extractedTextRaw;
-
+  
+  console.log("🧪 AFTER_EXTRACT_BEFORE_START", {
+  requestId: args.requestId,
+  filename: args.filename,
+  extractedChars: extractedText.length,
+  preview: safeStr(extractedText).slice(0, 200),
+});
   logInfo("PROCESS_INBOUND_START", {
-    requestId: args.requestId,
-    source: args.source,
-    filename: args.filename,
-    r2Key: args.r2?.key,
-  });
+  requestId: args.requestId,
+  source: args.source,
+  filename: args.filename,
+  r2Key: args.r2?.key,
+});
 
+// probe to confirm extraction worked
+console.log("🧪 AFTER_EXTRACT_BEFORE_START", {
+  requestId: args.requestId,
+  filename: args.filename,
+  extractedChars: extractedText?.length || 0,
+  preview: safeStr(extractedText).slice(0, 200),
+});
+
+// probe before classification
+console.log("🧪 BEFORE_DOCTYPE_CLASSIFY", {
+  requestId: args.requestId,
+  filename: args.filename,
+  extractedChars: extractedText?.length || 0,
+});
+
+let docType: "RESUME" | "NON_RESUME" = "NON_RESUME";
+
+try {
+  docType =
+    args.docType ||
+    (extractedText && extractedText.trim().length > 0
+      ? classifyDocTypeFromText(extractedText)
+      : "NON_RESUME");
+} catch (err: any) {
+  console.error("❌ DOCTYPE_CLASSIFY_FAIL", {
+    requestId: args.requestId,
+    filename: args.filename,
+    error: err?.message || String(err),
+    stack: err?.stack || null,
+  });
+  throw err;
+}
+
+console.log("🧪 PROCESS_INBOUND_DOC_TYPE", {
+  requestId: args.requestId,
+  filename: args.filename,
+  docType,
+  extractedChars: extractedText?.length || 0,
+  preview: extractedText?.slice(0, 120),
+});
   if (extractedTooLarge) {
     logWarn("EXTRACT_TOO_LARGE", {
       requestId: args.requestId,
@@ -2233,10 +2273,6 @@ async function processInboundDoc(args: {
       max: MAX_EXTRACTED_CHARS,
     });
   }
-
-  const docType: "RESUME" | "NON_RESUME" =
-    args.docType || (extractedText.trim().length > 0 ? classifyDocTypeFromText(extractedText) : "NON_RESUME");
-
   const toEmail = safeStr(args.toEmail).trim().toLowerCase();
 const filenameForEmail = safeStr(args.filename);
 const r2KeyForEmail = safeStr(args?.r2?.key || "");
