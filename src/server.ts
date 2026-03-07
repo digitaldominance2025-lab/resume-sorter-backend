@@ -3223,34 +3223,15 @@ app.post(
         return res.json({ ok: true, emailId, toEmail, attachments: atts.length, processed });
       }
 
-      // No attachments: text body. Treat as .txt (allowed)
-      const bodyText = safeStr((email as any).text || "");
-      if (!bodyText) return res.json({ ok: true, emailId, toEmail, attachments: 0, processed: false });
-
-      const iso = new Date().toISOString();
-      const safeName = `email_${emailId}.txt`;
-      const r2Key = `inbound/${iso.replace(/[:.]/g, "-")}__${safeName}`;
-      const buf = Buffer.from(bodyText, "utf8");
-
-      const up = await r2UploadBuffer({ key: r2Key, buffer: buf, contentType: "text/plain" });
-      const r2 = { bucket, key: up?.key || r2Key };
-
-      const docType: "RESUME" | "NON_RESUME" = classifyDocTypeFromText(bodyText);
-
-      const result = await processInboundDoc({
-        requestId: getRequestId(req),
-        source: "resend",
-        filename: safeName,
-        buffer: buf,
-        extractedText: bodyText,
-        docType,
+      // No attachments: ignore plain email bodies so result emails/replies do not become fake resumes
+      return res.json({
+        ok: true,
+        emailId,
         toEmail,
-        r2,
-        savedLocal: null,
-        deletedLocal: true,
+        attachments: 0,
+        ignored: true,
+        reason: "no_attachments",
       });
-
-      return res.json({ ok: true, emailId, toEmail, attachments: 0, processed: true, result });
     } catch (e: any) {
       console.warn("⚠️ RESEND webhook failed:", e?.message || e);
       return res.status(400).json({ ok: false, error: "invalid_webhook" });
