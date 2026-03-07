@@ -1586,7 +1586,7 @@ async function readResumesTabValues(spreadsheetId: string): Promise<string[][]> 
 
   const resp = await sheets.spreadsheets.values.get({
     spreadsheetId,
-    range: `${TAB}!A1:H5000`,
+    range: `${TAB}!A1:I5000`,
   });
 
   const vals = (resp.data.values || []) as any[];
@@ -1799,17 +1799,8 @@ async function appendResumeUnderJobSection(args: {
   }
    const sheetId = await getSheetIdByTitle(args.spreadsheetId, TAB);
 
-   if (sheetId !== null) {
-   await colorDecisionCell({
-    spreadsheetId: args.spreadsheetId,
-    sheetId,
-    rowIndex0: insertAt0,
-    decision: args.row.decision,
-  });
-}
-  
-  // If we can't resolve sheetId, fall back to values.append at bottom (safe)
-  if (sheetId == null) {
+// If we can't resolve sheetId, fall back to values.append at bottom (safe)
+if (sheetId == null) {
   await sheets.spreadsheets.values.append({
     spreadsheetId: args.spreadsheetId,
     range: `${TAB}!A:I`,
@@ -1831,29 +1822,30 @@ async function appendResumeUnderJobSection(args: {
   });
   return;
 }
-  // Insert a blank row at insertAt0 (0-based) to keep section intact
-  await sheets.spreadsheets.batchUpdate({
-    spreadsheetId: args.spreadsheetId,
-    requestBody: {
-      requests: [
-        {
-          insertDimension: {
-            range: {
-              sheetId,
-              dimension: "ROWS",
-              startIndex: insertAt0,      // 0-based, insert BEFORE this row
-              endIndex: insertAt0 + 1,
-            },
-            inheritFromBefore: true,
-          },
-        },
-      ],
-    },
-  });
 
-  // Write the resume row into that inserted row
-  const rowNumber = insertAt0 + 1; // 1-based for A1 notation
-  await sheets.spreadsheets.values.update({
+// Insert a blank row at insertAt0 (0-based) to keep section intact
+await sheets.spreadsheets.batchUpdate({
+  spreadsheetId: args.spreadsheetId,
+  requestBody: {
+    requests: [
+      {
+        insertDimension: {
+          range: {
+            sheetId,
+            dimension: "ROWS",
+            startIndex: insertAt0,
+            endIndex: insertAt0 + 1,
+          },
+          inheritFromBefore: true,
+        },
+      },
+    ],
+  },
+});
+
+// Write the resume row into that inserted row
+const rowNumber = insertAt0 + 1; // 1-based for A1 notation
+await sheets.spreadsheets.values.update({
   spreadsheetId: args.spreadsheetId,
   range: `${TAB}!A${rowNumber}:I${rowNumber}`,
   valueInputOption: "RAW",
@@ -1872,6 +1864,14 @@ async function appendResumeUnderJobSection(args: {
   },
 });
 
+// Color decision cell AFTER the row exists
+await colorDecisionCell({
+  spreadsheetId: args.spreadsheetId,
+  sheetId,
+  rowIndex0: insertAt0,
+  decision: args.row.decision,
+});
+  
   devLog("🧩 RESUME_APPENDED_UNDER_JOB:", args.spreadsheetId, args.jobTitle, { rowNumber });
 }
 async function ensureSheetTabExists(spreadsheetId: string, title: string) {
