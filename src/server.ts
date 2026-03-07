@@ -2964,6 +2964,17 @@ app.post(
   rateLimit("resend_inbound"),
   express.raw({ type: "application/json" }),
   async (req: Request, res: Response, next: any) => {
+    console.log("🧪 RESEND_ROUTE_ENTER", {
+      requestId: getRequestId(req),
+      method: req.method,
+      contentType: safeStr(req.headers["content-type"]),
+      hasBody: !!req.body,
+      bodyType: Buffer.isBuffer(req.body) ? "buffer" : typeof req.body,
+      svixId: !!req.headers["svix-id"],
+      svixTs: !!req.headers["svix-timestamp"],
+      svixSig: !!req.headers["svix-signature"],
+    });
+
     try {
       if (!RESEND_WEBHOOK_SECRET) return res.status(500).json({ ok: false, error: "missing_resend_webhook_secret" });
       if (!RESEND_API_KEY) return res.status(500).json({ ok: false, error: "missing_resend_api_key" });
@@ -2971,7 +2982,6 @@ app.post(
       const svixId = String(req.headers["svix-id"] || "");
       const svixTs = String(req.headers["svix-timestamp"] || "");
       const svixSig = String(req.headers["svix-signature"] || "");
-
       const payload = (req.body as Buffer).toString("utf8");
       const wh = new Webhook(RESEND_WEBHOOK_SECRET);
       const evt = wh.verify(payload, {
