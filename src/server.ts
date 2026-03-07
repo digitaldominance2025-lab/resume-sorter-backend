@@ -1639,7 +1639,7 @@ async function appendJobSectionAtBottom(spreadsheetId: string, jobTitle: string)
 
   await sheets.spreadsheets.values.append({
     spreadsheetId,
-    range: `${TAB}!A:I`,
+    range: `${TAB}!A:F`,
     valueInputOption: "RAW",
     insertDataOption: "INSERT_ROWS",
     requestBody: { values: sectionRows },
@@ -1790,24 +1790,21 @@ async function appendResumeUnderJobSection(args: {
 // If we can't resolve sheetId, fall back to values.append at bottom (safe)
 if (sheetId == null) {
   await sheets.spreadsheets.values.append({
-    spreadsheetId: args.spreadsheetId,
-    range: `${TAB}!A:I`,
-    valueInputOption: "RAW",
-    insertDataOption: "INSERT_ROWS",
-    requestBody: {
-      values: [[
-        args.row.receivedAt,
-        args.row.source,
-        args.row.filename,
-        args.row.score ?? "",
-        (args.row as any).decision ?? "",
-        args.row.summary || "",
-        args.row.r2Key || "",
-        args.row.resumeLink || "",
-        args.row.requestId || "",
-      ]],
-    },
-  });
+  spreadsheetId: args.spreadsheetId,
+  range: `${TAB}!A:F`,
+  valueInputOption: "RAW",
+  insertDataOption: "INSERT_ROWS",
+  requestBody: {
+    values: [[
+      args.row.receivedAt,
+      args.row.score ?? "",
+      (args.row as any).decision ?? "",
+      args.row.summary || "",
+      args.row.resumeLink || "",
+      args.row.requestId || "",
+    ]],
+  },
+});
   return;
 }
 
@@ -1836,12 +1833,9 @@ const rowNumber = insertAt0 + 1; // 1-based for A1 notation
 
 const rowValues = [[
   args.row.receivedAt,
-  args.row.source,
-  args.row.filename,
   args.row.score ?? "",
   (args.row as any).decision ?? "",
   args.row.summary || "",
-  args.row.r2Key || "",
   args.row.resumeLink || "",
   args.row.requestId || "",
 ]];
@@ -1857,13 +1851,13 @@ console.log("🧪 SHEET_WRITE_DEBUG", {
 // Clear target row first so weird inherited content/formatting doesn't survive
 await sheets.spreadsheets.values.clear({
   spreadsheetId: args.spreadsheetId,
-  range: `${TAB}!A${rowNumber}:I${rowNumber}`,
+  range: `${TAB}!A${rowNumber}:F${rowNumber}`,
 });
 
 // Now write clean values
 await sheets.spreadsheets.values.update({
   spreadsheetId: args.spreadsheetId,
-  range: `${TAB}!A${rowNumber}:I${rowNumber}`,
+  range: `${TAB}!A${rowNumber}:F${rowNumber}`,
   valueInputOption: "RAW",
   requestBody: {
     values: rowValues,
@@ -1876,6 +1870,25 @@ await colorDecisionCell({
   sheetId,
   rowIndex0: insertAt0,
   decision: args.row.decision,
+});
+
+// Auto resize columns so text is readable
+await sheets.spreadsheets.batchUpdate({
+  spreadsheetId: args.spreadsheetId,
+  requestBody: {
+    requests: [
+      {
+        autoResizeDimensions: {
+          dimensions: {
+            sheetId,
+            dimension: "COLUMNS",
+            startIndex: 0,
+            endIndex: 6,
+          },
+        },
+      },
+    ],
+  },
 });
 
 devLog("🧩 RESUME_APPENDED_UNDER_JOB:", args.spreadsheetId, args.jobTitle, { rowNumber });
@@ -2428,7 +2441,7 @@ if (!resolvedCustomerId && toEmail) {
       const sheetId = safeStr(match?.tallySheetId);
       const isResumeDoc = docType === "RESUME";
       const r2Key = safeStr(args?.r2?.key || "");
-      const resumeLink = `${APP_URL}/r/${args.requestId}`;
+      const resumeLink = `${BASE_URL}/r/${args.requestId}`;
 
       if (didIncrement && sheetId && customerId && isResumeDoc) {
         const scoreNum = Number(ai?.score);
