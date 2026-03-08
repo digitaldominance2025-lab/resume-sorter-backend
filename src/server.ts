@@ -58,6 +58,13 @@ const devLog = (...args: any[]) => {
 function safeStr(v: any) {
   return (v ?? "").toString().trim();
 }
+function extractCandidateEmail(text: string): string | null {
+  if (!text) return null;
+
+  const match = text.match(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i);
+
+  return match ? match[0].toLowerCase() : null;
+}
 function truthyEnv(name: string) {
   const v = safeStr(process.env[name]).toLowerCase();
   return v === "1" || v === "true" || v === "yes" || v === "y" || v === "on";
@@ -636,6 +643,7 @@ async function saveInboundDocToDb(args: {
   customerId?: string;
   resolvedCustomerId?: string;
   candidateKey?: string;
+  candidateEmail?: string;
   matchedJobId?: string;
   matchFound: boolean;
   billingStatus?: string;
@@ -2564,7 +2572,12 @@ if (!resolvedCustomerId && toEmail) {
             console.log("🧷 AI_IDEMPOTENT_SKIP:", customerId, today, docToken);
           } else {
             const forAi = extractedText.slice(0, MAX_OPENAI_CHARS);
+            const candidateEmail = extractCandidateEmail(extractedText);
             ai = await safeScoreResume(forAi, rubric);
+
+              if (candidateEmail) {
+              console.log("📧 CANDIDATE_EMAIL_DETECTED:", candidateEmail);
+                }         
                         // 30-day reapply rule
             try {
               const candidateKey = sha256Hex(extractedText.slice(0, 2000));
@@ -2658,11 +2671,13 @@ if (!resolvedCustomerId && toEmail) {
   }
 
   const textPreview = String(extractedText || "").slice(0, 400);
-
+  const candidateEmail = extractCandidateEmail(extractedText || "");
+  
   const aiScoreNum = Number(ai?.score);
   await saveInboundDocToDb({
   source: args.source,
   requestId: args.requestId, // 🔐 required for /r/:requestId
+  candidateEmail: candidateEmail || undefined,
   toEmail,
   customerId: customerId || undefined,
   resolvedCustomerId: resolvedCustomerId || undefined,
