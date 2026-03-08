@@ -1786,20 +1786,20 @@ async function appendResumeUnderJobSection(args: {
 // If we can't resolve sheetId, fall back to values.append at bottom (safe)
 if (sheetId == null) {
   await sheets.spreadsheets.values.append({
-  spreadsheetId: args.spreadsheetId,
-  range: `${TAB}!A:E`,
-  valueInputOption: "RAW",
-  insertDataOption: "INSERT_ROWS",
-  requestBody: {
-    values: [[
-      args.row.receivedAt,
-      args.row.score ?? "",
-      args.row.decision ?? "",
-      args.row.summary || "",
-      args.row.resumeLink || "",
-    ]],
-  },
-});
+    spreadsheetId: args.spreadsheetId,
+    range: `${TAB}!A:E`,
+    valueInputOption: "RAW",
+    insertDataOption: "INSERT_ROWS",
+    requestBody: {
+      values: [[
+        args.row.receivedAt,
+        args.row.score ?? "",
+        args.row.decision ?? "",
+        args.row.summary || "",
+        args.row.resumeLink || "",
+      ]],
+    },
+  });
   return;
 }
 
@@ -1842,13 +1842,45 @@ console.log("🧪 SHEET_WRITE_DEBUG", {
   rowValues: rowValues[0],
 });
 
-// Clear target row first so weird inherited content/formatting doesn't survive
+// Reset the whole target row formatting first (A:E)
+await sheets.spreadsheets.batchUpdate({
+  spreadsheetId: args.spreadsheetId,
+  requestBody: {
+    requests: [
+      {
+        repeatCell: {
+          range: {
+            sheetId,
+            startRowIndex: insertAt0,
+            endRowIndex: insertAt0 + 1,
+            startColumnIndex: 0, // A
+            endColumnIndex: 5,   // E
+          },
+          cell: {
+            userEnteredFormat: {
+              backgroundColor: { red: 1, green: 1, blue: 1 },
+              horizontalAlignment: "LEFT",
+              textFormat: {
+                bold: false,
+                foregroundColor: { red: 0, green: 0, blue: 0 },
+              },
+            },
+          },
+          fields:
+            "userEnteredFormat.backgroundColor,userEnteredFormat.horizontalAlignment,userEnteredFormat.textFormat.bold,userEnteredFormat.textFormat.foregroundColor",
+        },
+      },
+    ],
+  },
+});
+
+// Clear values only after format reset
 await sheets.spreadsheets.values.clear({
   spreadsheetId: args.spreadsheetId,
   range: `${TAB}!A${rowNumber}:E${rowNumber}`,
 });
 
-// Now write clean values
+// Write clean values
 await sheets.spreadsheets.values.update({
   spreadsheetId: args.spreadsheetId,
   range: `${TAB}!A${rowNumber}:E${rowNumber}`,
@@ -1865,7 +1897,8 @@ await colorDecisionCell({
   rowIndex0: insertAt0,
   decision: args.row.decision,
 });
-  await sheets.spreadsheets.batchUpdate({
+// Set column widths (A:E)
+await sheets.spreadsheets.batchUpdate({
   spreadsheetId: args.spreadsheetId,
   requestBody: {
     requests: [
@@ -1874,22 +1907,64 @@ await colorDecisionCell({
           range: {
             sheetId,
             dimension: "COLUMNS",
-            startIndex: 3, // column D = Summary
+            startIndex: 0, // A
+            endIndex: 1,
+          },
+          properties: { pixelSize: 240 },
+          fields: "pixelSize",
+        },
+      },
+      {
+        updateDimensionProperties: {
+          range: {
+            sheetId,
+            dimension: "COLUMNS",
+            startIndex: 1, // B
+            endIndex: 2,
+          },
+          properties: { pixelSize: 200 },
+          fields: "pixelSize",
+        },
+      },
+      {
+        updateDimensionProperties: {
+          range: {
+            sheetId,
+            dimension: "COLUMNS",
+            startIndex: 2, // C
+            endIndex: 3,
+          },
+          properties: { pixelSize: 200 },
+          fields: "pixelSize",
+        },
+      },
+      {
+        updateDimensionProperties: {
+          range: {
+            sheetId,
+            dimension: "COLUMNS",
+            startIndex: 3, // D
             endIndex: 4,
           },
-          properties: {
-            pixelSize: 320,
+          properties: { pixelSize: 640 },
+          fields: "pixelSize",
+        },
+      },
+      {
+        updateDimensionProperties: {
+          range: {
+            sheetId,
+            dimension: "COLUMNS",
+            startIndex: 4, // E
+            endIndex: 5,
           },
+          properties: { pixelSize: 320 },
           fields: "pixelSize",
         },
       },
     ],
   },
 });
-  
-
-// Auto resize columns so text is readable
-
 
 devLog("🧩 RESUME_APPENDED_UNDER_JOB:", args.spreadsheetId, args.jobTitle, { rowNumber });
 }
