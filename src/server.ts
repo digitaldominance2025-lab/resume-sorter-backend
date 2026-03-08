@@ -1933,7 +1933,7 @@ if (sheetId == null) {
   await sheets.spreadsheets.values.append({
     spreadsheetId: args.spreadsheetId,
     range: `${TAB}!A:E`,
-    valueInputOption: "RAW",
+    valueInputOption: "USER_ENTERED",
     insertDataOption: "INSERT_ROWS",
     requestBody: {
       values: [[
@@ -2029,7 +2029,7 @@ await sheets.spreadsheets.values.clear({
 await sheets.spreadsheets.values.update({
   spreadsheetId: args.spreadsheetId,
   range: `${TAB}!A${rowNumber}:E${rowNumber}`,
-  valueInputOption: "RAW",
+  valueInputOption: "USER_ENTERED",
   requestBody: {
     values: rowValues,
   },
