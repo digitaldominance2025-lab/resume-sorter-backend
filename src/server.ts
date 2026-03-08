@@ -1466,7 +1466,20 @@ async function applyResumesSheetLayout(args: {
     sheetId: args.sheetId,
     widths: { A: 120, B: 80, C: 100, D: 380, E: 120 },
   });
+const meta = await args.sheets.spreadsheets.get({
+  spreadsheetId: args.spreadsheetId,
+});
 
+const resumesSheet = meta.data.sheets?.find(
+  (s: any) => s.properties?.title === "Resumes"
+);
+
+if (!resumesSheet?.properties?.sheetId) {
+  console.log("⚠️ RESUMES_SHEET_NOT_FOUND");
+  return;
+}
+
+const sheetId = resumesSheet.properties.sheetId;
   await args.sheets.spreadsheets.batchUpdate({
     spreadsheetId: args.spreadsheetId,
     requestBody: {
