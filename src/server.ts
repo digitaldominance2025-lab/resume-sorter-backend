@@ -469,6 +469,21 @@ async function ensureDbTables() {
     } catch (e: any) {
       console.warn("⚠️ DB alter inbound_docs.request_id failed (continuing):", e?.message || e);
     }
+
+    try {
+      await pool.query(`ALTER TABLE inbound_docs ADD COLUMN IF NOT EXISTS candidate_key TEXT;`);
+      await pool.query(`ALTER TABLE inbound_docs ADD COLUMN IF NOT EXISTS matched_job_id TEXT;`);
+      await pool.query(`ALTER TABLE inbound_docs ADD COLUMN IF NOT EXISTS applied_at TIMESTAMPTZ NOT NULL DEFAULT now();`);
+
+      await pool.query(`CREATE INDEX IF NOT EXISTS inbound_docs_candidate_key_idx ON inbound_docs(candidate_key);`);
+      await pool.query(`CREATE INDEX IF NOT EXISTS inbound_docs_matched_job_id_idx ON inbound_docs(matched_job_id);`);
+      await pool.query(`CREATE INDEX IF NOT EXISTS inbound_docs_applied_at_idx ON inbound_docs(applied_at);`);
+
+      devLog("✅ DB inbound_docs reapply columns ensured");
+    } catch (e: any) {
+      console.warn("⚠️ DB alter inbound_docs reapply columns failed (continuing):", e?.message || e);
+    }
+    
 // Ensure pending_signups table exists (for Stripe trial checkout flow)
   await pool.query(`
     CREATE TABLE IF NOT EXISTS pending_signups (
@@ -581,12 +596,47 @@ async function deleteCustomerJob(customerId: string, jobId: string) {
     [customerId, jobId]
   );
 }
+async function hasRecentApplication(args: {
+  customerId: string;
+  candidateKey: string;
+  matchedJobId: string;
+  withinDays?: number;
+}): Promise<boolean> {
+  const withinDays = Number.isFinite(args.withinDays as any) ? Number(args.withinDays) : 30;
+
+  if (!args.customerId || !args.candidateKey || !args.matchedJobId) {
+    return false;
+  }
+
+  const r = await pool.query(
+    `
+    SELECT 1
+    FROM inbound_docs
+    WHERE customer_id = $1
+      AND candidate_key = $2
+      AND matched_job_id = $3
+      AND doc_type = 'RESUME'
+      AND applied_at >= (now() - ($4::text || ' days')::interval)
+    LIMIT 1
+    `,
+    [
+      safeStr(args.customerId),
+      safeStr(args.candidateKey),
+      safeStr(args.matchedJobId),
+      String(withinDays),
+    ]
+  );
+
+  return (r.rowCount || 0) > 0;
+}
 async function saveInboundDocToDb(args: {
   source: string;
   requestId?: string;
   toEmail?: string;
   customerId?: string;
   resolvedCustomerId?: string;
+  candidateKey?: string;
+  matchedJobId?: string;
   matchFound: boolean;
   billingStatus?: string;
   blockedReason?: string;
@@ -609,26 +659,28 @@ async function saveInboundDocToDb(args: {
         await pool.query(
       `
       INSERT INTO inbound_docs (
-        source,
-        request_id,
-        to_email,
-        customer_id,
-        resolved_customer_id,
-        match_found,
-        billing_status,
-        blocked_reason,
-        filename,
-        r2_bucket,
-        r2_key,
-        doc_type,
-        extracted_chars,
-        text_preview,
-        ai_score,
-        ai_json
-      )
+              source, 
+              request_id,
+              to_email,
+              customer_id,
+              resolved_customer_id,
+              candidate_key,
+              matched_job_id,
+              match_found,
+              billing_status,
+              blocked_reason,
+              filename,
+              r2_bucket,
+              r2_key,
+              doc_type,
+              extracted_chars,
+              text_preview,
+              ai_score,
+              ai_json
+              )
       VALUES (
-        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb
-      )
+  $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18::jsonb
+)
       `,
       [
         safeStr(args.source) || "unknown",
@@ -636,6 +688,8 @@ async function saveInboundDocToDb(args: {
         safeStr(args.toEmail) || null,
         safeStr(args.customerId) || null,
         safeStr(args.resolvedCustomerId) || null,
+        safeStr(args.candidateKey) || null,
+        safeStr(args.matchedJobId) || null,
         !!args.matchFound,
         safeStr(args.billingStatus) || null,
         safeStr(args.blockedReason) || null,
@@ -2513,6 +2567,29 @@ if (!resolvedCustomerId && toEmail) {
           } else {
             const forAi = extractedText.slice(0, MAX_OPENAI_CHARS);
             ai = await safeScoreResume(forAi, rubric);
+                        // 30-day reapply rule
+            try {
+              const candidateKey = sha256Hex(extractedText.slice(0, 2000));
+
+              const jobs = await listCustomerJobs(customerId);
+              const { matchedJobId } = await classifyResumeToJob(extractedText, jobs);
+
+              if (matchedJobId) {
+                const recent = await hasRecentApplication({
+                  customerId,
+                  candidateKey,
+                  matchedJobId,
+                  withinDays: 30,
+                });
+
+                if (recent) {
+                  console.log("🧷 REAPPLY_BLOCK_30D:", { customerId, matchedJobId });
+                  ai = { skipped: true, reason: "recent_application" };
+                }
+              }
+            } catch (e: any) {
+              console.warn("⚠️ REAPPLY_CHECK_FAILED:", e?.message || e);
+            }
           }
         } else {
           ai = { skipped: true, reason: "too_short" };
@@ -2640,7 +2717,7 @@ if (!resolvedCustomerId && toEmail) {
           const jobs = await listCustomerJobs(customerId);
 
           const { matchedJobId, confidence } = await classifyResumeToJob(extractedText, jobs);
-
+                   
           let jobTitle = "Unsorted";
 
           if (matchedJobId && confidence >= JOB_MATCH_CONFIDENCE_THRESHOLD) {
