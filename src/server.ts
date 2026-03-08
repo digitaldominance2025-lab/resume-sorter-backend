@@ -3589,7 +3589,11 @@ if (!url) {
     res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
     res.setHeader("Pragma", "no-cache");
     res.setHeader("Expires", "0");
-
+console.log("🔁 R_REDIRECT_TARGET", {
+  requestId,
+  r2Key,
+  url,
+});
     return res.redirect(302, url);
   } catch (e: any) {
     return next(e);
