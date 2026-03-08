@@ -1462,6 +1462,11 @@ async function applyResumesSheetLayout(args: {
   sheetId: number;
 })
 {
+console.log("🧪 APPLY_RESUMES_LAYOUT_DEBUG", {
+  spreadsheetId: args.spreadsheetId,
+  sheetId: args.sheetId,
+  pixelSize: 850,
+});
   await args.sheets.spreadsheets.batchUpdate({
     spreadsheetId: args.spreadsheetId,
     requestBody: {
