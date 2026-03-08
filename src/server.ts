@@ -2608,7 +2608,13 @@ if (!resolvedCustomerId && toEmail) {
       const isResumeDoc = docType === "RESUME";
       const r2Key = safeStr(args?.r2?.key || "");
       const resumeLink = `${BASE_URL}/r/${args.requestId}`;
-      const resumeLinkLabel = safeStr(filenameForEmail || args.filename || "Resume").replace(/"/g, '""');
+      const resumeLinkLabel = safeStr(filenameForEmail || args.filename || "Resume")
+        .replace(/\.(pdf|docx|txt)$/i, "")
+        .replace(/[_-]+/g, " ")
+        .replace(/\bresume\b/gi, "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .replace(/"/g, '""');
       const resumeLinkCell = `=HYPERLINK("${resumeLink}","${resumeLinkLabel}")`;
       if (didIncrement && sheetId && customerId && isResumeDoc) {
         const scoreNum = Number(ai?.score);
