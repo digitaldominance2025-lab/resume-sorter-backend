@@ -1216,7 +1216,7 @@ async function ensureTodayTallyRow(
     await ensureSheetSharedOnce(tallySheetId, ADMIN_EMAIL);
   }
 
-  const TALLY_TAB = "Tally";
+  const TALLY_TAB = "Resumes";
 
 const existingRes = await sheets.spreadsheets.values.get({
   spreadsheetId: tallySheetId,
