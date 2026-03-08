@@ -1582,7 +1582,7 @@ async function readResumesTabValues(spreadsheetId: string): Promise<string[][]> 
 
   const resp = await sheets.spreadsheets.values.get({
     spreadsheetId,
-    range: `${TAB}!A1:I5000`,
+    range: `${TAB}!A1:E5000`,
   });
 
   const vals = (resp.data.values || []) as any[];
