@@ -1456,6 +1456,43 @@ async function tallyApply(
 // ============================
 // Job-Section Sheet Engine (vertical left layout)
 // ============================
+async function applyResumesSheetLayout(args: {
+  sheets: any;
+  spreadsheetId: string;
+  sheetId: number;
+})
+{
+  await args.sheets.spreadsheets.batchUpdate({
+    spreadsheetId: args.spreadsheetId,
+    requestBody: {
+      requests: [
+        {
+          updateSheetProperties: {
+            properties: {
+              sheetId: args.sheetId,
+              gridProperties: {
+                frozenRowCount: 2,
+              },
+            },
+            fields: "gridProperties.frozenRowCount",
+          },
+        },
+        {
+          updateDimensionProperties: {
+            range: {
+              sheetId: args.sheetId,
+              dimension: "COLUMNS",
+              startIndex: 0, // A
+              endIndex: 5,   // through E
+            },
+            properties: { pixelSize: 850 },
+            fields: "pixelSize",
+          },
+        },
+      ],
+    },
+  });
+}
 async function colorDecisionCell(args: {
   spreadsheetId: string;
   sheetId: number;
@@ -1803,7 +1840,11 @@ if (sheetId == null) {
   });
   return;
 }
-
+await applyResumesSheetLayout({
+  sheets,
+  spreadsheetId: args.spreadsheetId,
+  sheetId,
+});
 // Insert a blank row at insertAt0 (0-based) to keep section intact
 await sheets.spreadsheets.batchUpdate({
   spreadsheetId: args.spreadsheetId,
@@ -1898,37 +1939,7 @@ await colorDecisionCell({
   rowIndex0: insertAt0,
   decision: args.row.decision,
 });
-// Set column widths (A:E) + freeze top 2 rows
-await sheets.spreadsheets.batchUpdate({
-  spreadsheetId: args.spreadsheetId,
-  requestBody: {
-    requests: [
-      {
-        updateSheetProperties: {
-          properties: {
-            sheetId,
-            gridProperties: {
-              frozenRowCount: 2,
-            },
-          },
-          fields: "gridProperties.frozenRowCount",
-        },
-      },
-      {
-        updateDimensionProperties: {
-          range: {
-            sheetId,
-            dimension: "COLUMNS",
-            startIndex: 0, // A
-            endIndex: 5,   // through E
-          },
-          properties: { pixelSize: 850 },
-          fields: "pixelSize",
-        },
-      },
-    ],
-  },
-});
+
 devLog("🧩 RESUME_APPENDED_UNDER_JOB:", args.spreadsheetId, args.jobTitle, { rowNumber });
 }
 async function ensureSheetTabExists(spreadsheetId: string, title: string) {
