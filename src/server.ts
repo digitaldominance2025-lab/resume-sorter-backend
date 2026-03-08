@@ -1922,7 +1922,7 @@ await sheets.spreadsheets.batchUpdate({
             startIndex: 0, // A
             endIndex: 5,   // through E
           },
-          properties: { pixelSize: 640 },
+          properties: { pixelSize: 1280 },
           fields: "pixelSize",
         },
       },
