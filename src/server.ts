@@ -1460,13 +1460,13 @@ async function applyResumesSheetLayout(args: {
   sheets: any;
   spreadsheetId: string;
   sheetId: number;
-})
-{
-console.log("🧪 APPLY_RESUMES_LAYOUT_DEBUG", {
-  spreadsheetId: args.spreadsheetId,
-  sheetId: args.sheetId,
-  pixelSize: 850,
-});
+}) {
+  console.log("🧪 APPLY_RESUMES_LAYOUT_DEBUG", {
+    spreadsheetId: args.spreadsheetId,
+    sheetId: args.sheetId,
+    widths: { A: 120, B: 80, C: 100, D: 380, E: 120 },
+  });
+
   await args.sheets.spreadsheets.batchUpdate({
     spreadsheetId: args.spreadsheetId,
     requestBody: {
@@ -1487,10 +1487,58 @@ console.log("🧪 APPLY_RESUMES_LAYOUT_DEBUG", {
             range: {
               sheetId: args.sheetId,
               dimension: "COLUMNS",
-              startIndex: 0, // A
-              endIndex: 5,   // through E
+              startIndex: 0, // A = Date
+              endIndex: 1,
             },
-            properties: { pixelSize: 850 },
+            properties: { pixelSize: 120 },
+            fields: "pixelSize",
+          },
+        },
+        {
+          updateDimensionProperties: {
+            range: {
+              sheetId: args.sheetId,
+              dimension: "COLUMNS",
+              startIndex: 1, // B = Score
+              endIndex: 2,
+            },
+            properties: { pixelSize: 80 },
+            fields: "pixelSize",
+          },
+        },
+        {
+          updateDimensionProperties: {
+            range: {
+              sheetId: args.sheetId,
+              dimension: "COLUMNS",
+              startIndex: 2, // C = Decision
+              endIndex: 3,
+            },
+            properties: { pixelSize: 100 },
+            fields: "pixelSize",
+          },
+        },
+        {
+          updateDimensionProperties: {
+            range: {
+              sheetId: args.sheetId,
+              dimension: "COLUMNS",
+              startIndex: 3, // D = Summary
+              endIndex: 4,
+            },
+            properties: { pixelSize: 380 },
+            fields: "pixelSize",
+          },
+        },
+        {
+          updateDimensionProperties: {
+            range: {
+              sheetId: args.sheetId,
+              dimension: "COLUMNS",
+              startIndex: 4, // E = Link
+              endIndex: 5,
+            },
+            properties: { pixelSize: 120 },
             fields: "pixelSize",
           },
         },
