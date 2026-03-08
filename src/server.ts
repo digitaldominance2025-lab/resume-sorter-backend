@@ -1464,22 +1464,9 @@ async function applyResumesSheetLayout(args: {
   console.log("🧪 APPLY_RESUMES_LAYOUT_DEBUG", {
     spreadsheetId: args.spreadsheetId,
     sheetId: args.sheetId,
-    widths: { A: 120, B: 80, C: 100, D: 380, E: 120 },
+    widths: { A: 160, B: 110, C: 140, D: 500, E: 180 },
   });
-const meta = await args.sheets.spreadsheets.get({
-  spreadsheetId: args.spreadsheetId,
-});
 
-const resumesSheet = meta.data.sheets?.find(
-  (s: any) => s.properties?.title === "Resumes"
-);
-
-if (!resumesSheet?.properties?.sheetId) {
-  console.log("⚠️ RESUMES_SHEET_NOT_FOUND");
-  return;
-}
-
-const sheetId = resumesSheet.properties.sheetId;
   await args.sheets.spreadsheets.batchUpdate({
     spreadsheetId: args.spreadsheetId,
     requestBody: {
@@ -1503,7 +1490,7 @@ const sheetId = resumesSheet.properties.sheetId;
               startIndex: 0, // A = Date
               endIndex: 1,
             },
-            properties: { pixelSize: 120 },
+            properties: { pixelSize: 160 },
             fields: "pixelSize",
           },
         },
@@ -1515,7 +1502,7 @@ const sheetId = resumesSheet.properties.sheetId;
               startIndex: 1, // B = Score
               endIndex: 2,
             },
-            properties: { pixelSize: 80 },
+            properties: { pixelSize: 110 },
             fields: "pixelSize",
           },
         },
@@ -1527,7 +1514,7 @@ const sheetId = resumesSheet.properties.sheetId;
               startIndex: 2, // C = Decision
               endIndex: 3,
             },
-            properties: { pixelSize: 100 },
+            properties: { pixelSize: 140 },
             fields: "pixelSize",
           },
         },
@@ -1539,7 +1526,7 @@ const sheetId = resumesSheet.properties.sheetId;
               startIndex: 3, // D = Summary
               endIndex: 4,
             },
-            properties: { pixelSize: 380 },
+            properties: { pixelSize: 500 },
             fields: "pixelSize",
           },
         },
@@ -1551,7 +1538,7 @@ const sheetId = resumesSheet.properties.sheetId;
               startIndex: 4, // E = Link
               endIndex: 5,
             },
-            properties: { pixelSize: 120 },
+            properties: { pixelSize: 180 },
             fields: "pixelSize",
           },
         },
@@ -1993,7 +1980,6 @@ await sheets.spreadsheets.values.update({
     values: rowValues,
   },
 });
-
 // Color decision cell AFTER the row exists
 await colorDecisionCell({
   spreadsheetId: args.spreadsheetId,
@@ -2004,12 +1990,24 @@ await colorDecisionCell({
 
 devLog("🧩 RESUME_APPENDED_UNDER_JOB:", args.spreadsheetId, args.jobTitle, { rowNumber });
 
+// Apply layout once
+await applyResumesSheetLayout({
+  sheets,
+  spreadsheetId: args.spreadsheetId,
+  sheetId,
+});
+
+// Wait briefly so Google Sheets finishes recalculating the grid
+await new Promise(resolve => setTimeout(resolve, 200));
+
+// Apply layout again to force column widths
 await applyResumesSheetLayout({
   sheets,
   spreadsheetId: args.spreadsheetId,
   sheetId,
 });
 }
+
 async function ensureSheetTabExists(spreadsheetId: string, title: string) {
   const sheets = google.sheets({ version: "v4", auth: oauth2Client });
 
