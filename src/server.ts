@@ -1216,7 +1216,7 @@ async function ensureTodayTallyRow(
     await ensureSheetSharedOnce(tallySheetId, ADMIN_EMAIL);
   }
 
-  const TALLY_TAB = "Sheet1";
+  const TALLY_TAB = "Tally";
 
 const existingRes = await sheets.spreadsheets.values.get({
   spreadsheetId: tallySheetId,
@@ -1922,7 +1922,7 @@ await sheets.spreadsheets.batchUpdate({
             startIndex: 0, // A
             endIndex: 5,   // through E
           },
-          properties: { pixelSize: 1280 },
+          properties: { pixelSize: 1000 },
           fields: "pixelSize",
         },
       },
