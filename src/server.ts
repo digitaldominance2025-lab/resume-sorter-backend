@@ -1778,7 +1778,7 @@ async function appendJobSectionAtBottom(spreadsheetId: string, jobTitle: string)
 
   await sheets.spreadsheets.values.append({
     spreadsheetId,
-    range: `${TAB}!A:F`,
+    range: `${TAB}!A:E`,
     valueInputOption: "RAW",
     insertDataOption: "INSERT_ROWS",
     requestBody: { values: sectionRows },
@@ -1901,11 +1901,11 @@ async function appendResumeUnderJobSection(args: {
   const values = await readResumesTabValues(args.spreadsheetId);
   const start0 = findJobSectionStart(values, args.jobTitle);
 
-  // Safety: if still not found, just append at bottom (should not happen)
-  if (start0 === -1) {
-    await appendResumeRow(args.spreadsheetId, args.row);
-    return;
-  }
+  // Safety: if still not found, create section instead of using legacy writer
+if (start0 === -1) {
+  await ensureJobSectionExists(args.spreadsheetId, args.jobTitle);
+  return;
+}
 
   const nextSectionStart0 = findJobSectionEnd(values, start0);
 
