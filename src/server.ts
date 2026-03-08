@@ -1216,42 +1216,43 @@ async function ensureTodayTallyRow(
     await ensureSheetSharedOnce(tallySheetId, ADMIN_EMAIL);
   }
 
-  const existingRes = await sheets.spreadsheets.values.get({
-    spreadsheetId: tallySheetId,
-    range: "A2:H1000",
-  });
+  const TALLY_TAB = "Sheet1";
 
-  const rows = existingRes.data.values || [];
-  const rowIndex0 = rows.findIndex((r: any[]) => safeStr(r?.[0]) === today);
+const existingRes = await sheets.spreadsheets.values.get({
+  spreadsheetId: tallySheetId,
+  range: `${TALLY_TAB}!A2:H1000`,
+});
 
-  if (rowIndex0 !== -1) {
-    const currentCount = Number(rows[rowIndex0]?.[1] || 0);
-    const currentNotes = safeStr(rows[rowIndex0]?.[2]);
-    return { rowIndex0, currentCount, currentNotes };
-  }
+const rows = existingRes.data.values || [];
+const rowIndex0 = rows.findIndex((r: any[]) => safeStr(r?.[0]) === today);
 
-  await sheets.spreadsheets.values.append({
-    spreadsheetId: tallySheetId,
-    range: "A:H",
-    valueInputOption: "RAW",
-    requestBody: { values: [[today, 0, "", customerId, "", "", "", ""]] },
-  });
-
-  const rereadRes = await sheets.spreadsheets.values.get({
-    spreadsheetId: tallySheetId,
-    range: "A2:H1000",
-  });
-
-  const rows2 = rereadRes.data.values || [];
-  const idx2 = rows2.findIndex((r: any[]) => safeStr(r?.[0]) === today);
-
-  return {
-    rowIndex0: idx2 === -1 ? rows2.length - 1 : idx2,
-    currentCount: 0,
-    currentNotes: "",
-  };
+if (rowIndex0 !== -1) {
+  const currentCount = Number(rows[rowIndex0]?.[1] || 0);
+  const currentNotes = safeStr(rows[rowIndex0]?.[2]);
+  return { rowIndex0, currentCount, currentNotes };
 }
 
+await sheets.spreadsheets.values.append({
+  spreadsheetId: tallySheetId,
+  range: `${TALLY_TAB}!A:H`,
+  valueInputOption: "RAW",
+  requestBody: { values: [[today, 0, "", customerId, "", "", "", ""]] },
+});
+
+const rereadRes = await sheets.spreadsheets.values.get({
+  spreadsheetId: tallySheetId,
+  range: `${TALLY_TAB}!A2:H1000`,
+});
+
+const rows2 = rereadRes.data.values || [];
+const idx2 = rows2.findIndex((r: any[]) => safeStr(r?.[0]) === today);
+
+return {
+  rowIndex0: idx2 === -1 ? rows2.length - 1 : idx2,
+  currentCount: 0,
+  currentNotes: "",
+};
+}
 // ✅ Used by nightly emails: reads today’s row by header names
 async function readTodayTallyRowByHeaders(
   tallySheetId: string,
@@ -1897,75 +1898,37 @@ await colorDecisionCell({
   rowIndex0: insertAt0,
   decision: args.row.decision,
 });
-// Set column widths (A:E)
+// Set column widths (A:E) + freeze top 2 rows
 await sheets.spreadsheets.batchUpdate({
   spreadsheetId: args.spreadsheetId,
   requestBody: {
     requests: [
+      {
+        updateSheetProperties: {
+          properties: {
+            sheetId,
+            gridProperties: {
+              frozenRowCount: 2,
+            },
+          },
+          fields: "gridProperties.frozenRowCount",
+        },
+      },
       {
         updateDimensionProperties: {
           range: {
             sheetId,
             dimension: "COLUMNS",
             startIndex: 0, // A
-            endIndex: 1,
-          },
-          properties: { pixelSize: 240 },
-          fields: "pixelSize",
-        },
-      },
-      {
-        updateDimensionProperties: {
-          range: {
-            sheetId,
-            dimension: "COLUMNS",
-            startIndex: 1, // B
-            endIndex: 2,
-          },
-          properties: { pixelSize: 200 },
-          fields: "pixelSize",
-        },
-      },
-      {
-        updateDimensionProperties: {
-          range: {
-            sheetId,
-            dimension: "COLUMNS",
-            startIndex: 2, // C
-            endIndex: 3,
-          },
-          properties: { pixelSize: 200 },
-          fields: "pixelSize",
-        },
-      },
-      {
-        updateDimensionProperties: {
-          range: {
-            sheetId,
-            dimension: "COLUMNS",
-            startIndex: 3, // D
-            endIndex: 4,
+            endIndex: 5,   // through E
           },
           properties: { pixelSize: 640 },
-          fields: "pixelSize",
-        },
-      },
-      {
-        updateDimensionProperties: {
-          range: {
-            sheetId,
-            dimension: "COLUMNS",
-            startIndex: 4, // E
-            endIndex: 5,
-          },
-          properties: { pixelSize: 320 },
           fields: "pixelSize",
         },
       },
     ],
   },
 });
-
 devLog("🧩 RESUME_APPENDED_UNDER_JOB:", args.spreadsheetId, args.jobTitle, { rowNumber });
 }
 async function ensureSheetTabExists(spreadsheetId: string, title: string) {
@@ -2559,7 +2522,8 @@ if (!resolvedCustomerId && toEmail) {
       const isResumeDoc = docType === "RESUME";
       const r2Key = safeStr(args?.r2?.key || "");
       const resumeLink = `${BASE_URL}/r/${args.requestId}`;
-
+      const resumeLinkLabel = safeStr(filenameForEmail || args.filename || "Resume").replace(/"/g, '""');
+      const resumeLinkCell = `=HYPERLINK("${resumeLink}","${resumeLinkLabel}")`;
       if (didIncrement && sheetId && customerId && isResumeDoc) {
         const scoreNum = Number(ai?.score);
         const score = Number.isFinite(scoreNum) ? scoreNum : null;
@@ -2609,7 +2573,7 @@ if (!resolvedCustomerId && toEmail) {
 
               summary: summary.slice(0, 2000),
               r2Key,
-              resumeLink,
+              resumeLink: resumeLinkCell,
               requestId: args.requestId,
             },
           });
@@ -2638,7 +2602,7 @@ if (!resolvedCustomerId && toEmail) {
               score: null, // ✅ no score for General Submissions
               summary: reasonText.slice(0, 2000), // ✅ store why it went here
               r2Key,
-              resumeLink,
+              resumeLink: resumeLinkCell,
               requestId: args.requestId,
             },
           });
