@@ -1970,7 +1970,16 @@ async function ensureSheetTabExists(spreadsheetId: string, title: string) {
 
 async function ensureResumesTab(spreadsheetId: string) {
   const TAB = "Resumes";
+const sheetId = await getSheetIdByTitle(spreadsheetId, TAB);
+if (sheetId != null) {
+  const sheets = google.sheets({ version: "v4", auth: oauth2Client });
 
+  await applyResumesSheetLayout({
+    sheets,
+    spreadsheetId,
+    sheetId,
+  });
+}
   // Enforce single-tab layout first
   await ensureSingleTabResumes(spreadsheetId);
 
