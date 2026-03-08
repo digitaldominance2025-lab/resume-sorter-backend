@@ -3542,59 +3542,55 @@ app.get("/r/:requestId", async (req: Request, res: Response, next: any) => {
       throw new AppError("Not allowed", 403, "not_allowed", true);
     }
 
-        // 3) Generate a fresh signed URL (preferred)
-    //    (robust: supports different signer export names + return shapes)
-    let url = "";
+    // 3) Generate a fresh signed URL (preferred)
+let url = "";
 
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const r2Svc: any = require("./services/r2");
+try {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const r2Svc: any = require("./services/r2");
 
-      const signer =
-        r2Svc?.r2GetSignedUrl ||
-        r2Svc?.r2SignedUrlForKey ||
-        r2Svc?.r2CreateSignedUrl ||
-        r2Svc?.getSignedR2Url ||
-        r2Svc?.getSignedUrl ||
-        null;
+  if (typeof r2Svc?.getSignedR2Url !== "function") {
+    throw new Error("getSignedR2Url export missing");
+  }
 
-      if (typeof signer === "function") {
-        // Try object-arg style first, then positional
-        let out: any = null;
+  const out = await r2Svc.getSignedR2Url({
+    key: r2Key,
+    expiresInSeconds: 600,
+  });
 
-        try {
-          out = await signer({ key: r2Key, expiresInSeconds: 600 });
-        } catch {
-          // ignore, try positional
-        }
+  if (typeof out === "string") {
+    url = out;
+  } else if (out && typeof out === "object") {
+    url = safeStr(out.url || out.signedUrl || out.signed_url || "");
+  }
 
-        if (!out) {
-          try {
-            out = await signer(r2Key, 600);
-          } catch {
-            // ignore
-          }
-        }
+  devLog("🔐 R_SIGNED_URL_RESULT", {
+    requestId,
+    r2Key,
+    hasUrl: !!url,
+  });
+} catch (err: any) {
+  const signerErrMsg = err?.message || String(err);
 
-        // Normalize return: string OR { url } OR { signedUrl }
-        if (typeof out === "string") url = out;
-        else if (out && typeof out === "object") {
-          url = safeStr(out.url || out.signedUrl || out.signed_url || "");
-        }
-      }
-    } catch {
-      url = "";
-    }
-    // Fallback: only if you explicitly enabled public links
-    if (!url) {
-      const publicUrl = buildR2PublicUrl(r2Key);
-      if (publicUrl) url = publicUrl;
-    }
+  console.error("❌ R_SIGNED_URL_ERR", {
+    requestId,
+    r2Key,
+    message: signerErrMsg,
+  });
 
-    if (!url) {
-      // This means you haven't wired a signer yet and public links are off
-      throw new AppError("Signed URL not configured", 500, "misconfigured_server", false);
-    }
+  throw new AppError(
+    `Signed URL error: ${signerErrMsg}`,
+    500,
+    "misconfigured_server",
+    false
+  );
+}
+// Fallback: only if you explicitly enabled public links
+if (!url) {
+  const publicUrl = buildR2PublicUrl(r2Key);
+  if (publicUrl) url = publicUrl;
+}
+
 
     // 4) Redirect to the fresh URL
    // Prevent caching of signed URLs
