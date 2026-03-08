@@ -1906,11 +1906,7 @@ if (sheetId == null) {
   });
   return;
 }
-await applyResumesSheetLayout({
-  sheets,
-  spreadsheetId: args.spreadsheetId,
-  sheetId,
-});
+
 // Insert a blank row at insertAt0 (0-based) to keep section intact
 await sheets.spreadsheets.batchUpdate({
   spreadsheetId: args.spreadsheetId,
@@ -2007,6 +2003,12 @@ await colorDecisionCell({
 });
 
 devLog("🧩 RESUME_APPENDED_UNDER_JOB:", args.spreadsheetId, args.jobTitle, { rowNumber });
+
+await applyResumesSheetLayout({
+  sheets,
+  spreadsheetId: args.spreadsheetId,
+  sheetId,
+});
 }
 async function ensureSheetTabExists(spreadsheetId: string, title: string) {
   const sheets = google.sheets({ version: "v4", auth: oauth2Client });
