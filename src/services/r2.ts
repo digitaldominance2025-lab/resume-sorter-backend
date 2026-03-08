@@ -160,3 +160,25 @@ export function getPublicR2Url(key: string) {
   const bucket = process.env.CLOUDFLARE_R2_BUCKET;
   return `https://${accountId}.r2.cloudflarestorage.com/${bucket}/${key}`;
 }
+export async function getSignedR2Url(args: {
+  key: string;
+  expiresInSeconds?: number;
+}): Promise<{ url: string }> {
+  const key = (args?.key || "").trim();
+  const expiresInSeconds = args?.expiresInSeconds ?? 600;
+
+  if (!key) throw new Error("Missing key");
+
+  const { client, bucket } = getR2Client();
+
+  const command = new GetObjectCommand({
+    Bucket: bucket,
+    Key: key,
+  });
+
+  const url = await getSignedUrl(client, command, {
+    expiresIn: expiresInSeconds,
+  });
+
+  return { url };
+}

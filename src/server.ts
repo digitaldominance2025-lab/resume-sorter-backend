@@ -24,7 +24,7 @@ import * as emailSvc from "./services/email";
 import * as customerUtils from "./utils/customer";
 
 // ✅ Use your single R2 service (do NOT also create AWS SDK client here)
-import { r2UploadBuffer, r2DownloadToBuffer } from "./services/r2";
+import { r2UploadBuffer, r2DownloadToBuffer, getSignedR2Url } from "./services/r2";
 
 // pdf-parse (classic callable function) - requires: npm i pdf-parse@1.1.1
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -3541,19 +3541,11 @@ app.get("/r/:requestId", async (req: Request, res: Response, next: any) => {
     if (!gate.allowed) {
       throw new AppError("Not allowed", 403, "not_allowed", true);
     }
-
     // 3) Generate a fresh signed URL (preferred)
 let url = "";
 
 try {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const r2Svc: any = require("./services/r2");
-
-  if (typeof r2Svc?.getSignedR2Url !== "function") {
-    throw new Error("getSignedR2Url export missing");
-  }
-
-  const out = await r2Svc.getSignedR2Url({
+  const out = await getSignedR2Url({
     key: r2Key,
     expiresInSeconds: 600,
   });
@@ -3561,7 +3553,7 @@ try {
   if (typeof out === "string") {
     url = out;
   } else if (out && typeof out === "object") {
-    url = safeStr(out.url || out.signedUrl || out.signed_url || "");
+  url = safeStr(out.url || "");
   }
 
   devLog("🔐 R_SIGNED_URL_RESULT", {
@@ -3585,13 +3577,13 @@ try {
     false
   );
 }
+
 // Fallback: only if you explicitly enabled public links
 if (!url) {
   const publicUrl = buildR2PublicUrl(r2Key);
   if (publicUrl) url = publicUrl;
 }
-
-
+    
     // 4) Redirect to the fresh URL
    // Prevent caching of signed URLs
     res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
