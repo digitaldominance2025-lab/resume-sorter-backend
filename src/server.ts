@@ -1418,90 +1418,88 @@ async function tallyApply(
     }
   }
 
-  const nextCount = shouldIncrement ? currentCount + 1 : currentCount;
+const nextCount = shouldIncrement ? currentCount + 1 : currentCount;
+
+// TEMP: disable tally sheet mutation to prevent duplicate resume rows
+/*
+await sheets.spreadsheets.values.update({
+  spreadsheetId: tallySheetId,
+  range: `B${rowNumber}`,
+  valueInputOption: "RAW",
+  requestBody: { values: [[nextCount]] },
+});
+
+await sheets.spreadsheets.values.update({
+  spreadsheetId: tallySheetId,
+  range: `C${rowNumber}`,
+  valueInputOption: "RAW",
+  requestBody: { values: [[nextNotes]] },
+});
+
+await sheets.spreadsheets.values.update({
+  spreadsheetId: tallySheetId,
+  range: `D${rowNumber}`,
+  valueInputOption: "RAW",
+  requestBody: { values: [[customerId]] },
+});
+
+if (docType === "RESUME" && r2Key) {
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: tallySheetId,
-    range: `B${rowNumber}`,
+    range: `E${rowNumber}`,
     valueInputOption: "RAW",
-    requestBody: { values: [[nextCount]] },
+    requestBody: { values: [[r2Key]] },
   });
+
+  const url = buildR2PublicUrl(r2Key);
+  const fileCell = url ? `=HYPERLINK("${url}","resume file")` : "";
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: tallySheetId,
-    range: `C${rowNumber}`,
-    valueInputOption: "RAW",
-    requestBody: { values: [[nextNotes]] },
+    range: `F${rowNumber}`,
+    valueInputOption: "USER_ENTERED",
+    requestBody: { values: [[fileCell || url]] },
   });
 
-  await sheets.spreadsheets.values.update({
+  const existingG = await sheets.spreadsheets.values.get({
     spreadsheetId: tallySheetId,
-    range: `D${rowNumber}`,
-    valueInputOption: "RAW",
-    requestBody: { values: [[customerId]] },
+    range: `G${rowNumber}`,
   });
 
-  if (docType === "RESUME" && r2Key) {
-    // E = latest r2Key
-    await sheets.spreadsheets.values.update({
-      spreadsheetId: tallySheetId,
-      range: `E${rowNumber}`,
-      valueInputOption: "RAW",
-      requestBody: { values: [[r2Key]] },
-    });
+  const currentG = safeStr(existingG.data.values?.[0]?.[0]);
+  const tokens = currentG
+    ? currentG.split(",").map((s: string) => s.trim()).filter(Boolean)
+    : [];
 
-    // F = clickable link (USER_ENTERED so formula evaluates)
-    const url = buildR2PublicUrl(r2Key);
-    const fileCell = url ? `=HYPERLINK("${url}","resume file")` : "";
-    await sheets.spreadsheets.values.update({
-      spreadsheetId: tallySheetId,
-      range: `F${rowNumber}`,
-      valueInputOption: "USER_ENTERED",
-      requestBody: { values: [[fileCell || url]] },
-    });
+  const wanted: string[] = [];
+  if (docToken) wanted.push(docToken);
+  if (r2Key) wanted.push(`r2:${r2Key}`);
 
-    // G = idempotency tokens csv
-    const existingG = await sheets.spreadsheets.values.get({
-      spreadsheetId: tallySheetId,
-      range: `G${rowNumber}`,
-    });
-
-    const currentG = safeStr(existingG.data.values?.[0]?.[0]);
-    const tokens = currentG
-      ? currentG
-          .split(",")
-          .map((s: string) => s.trim())
-          .filter(Boolean)
-      : [];
-
-    const wanted: string[] = [];
-    if (docToken) wanted.push(docToken); // stable: hash:...
-    if (r2Key) wanted.push(`r2:${r2Key}`); // optional trace
-
-    for (const w of wanted) {
-      if (!tokens.includes(w)) tokens.push(w);
-    }
-
-    const nextG = tokens.join(", ");
-
-    await sheets.spreadsheets.values.update({
-      spreadsheetId: tallySheetId,
-      range: `G${rowNumber}`,
-      valueInputOption: "RAW",
-      requestBody: { values: [[nextG]] },
-    });
-
-    const scoreNum = Number(ai?.score);
-    if (Number.isFinite(scoreNum)) {
-      await sheets.spreadsheets.values.update({
-        spreadsheetId: tallySheetId,
-        range: `H${rowNumber}`,
-        valueInputOption: "RAW",
-        requestBody: { values: [[scoreNum]] },
-      });
-    }
+  for (const w of wanted) {
+    if (!tokens.includes(w)) tokens.push(w);
   }
 
+  const nextG = tokens.join(", ");
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: tallySheetId,
+    range: `G${rowNumber}`,
+    valueInputOption: "RAW",
+    requestBody: { values: [[nextG]] },
+  });
+
+  const scoreNum = Number(ai?.score);
+  if (Number.isFinite(scoreNum)) {
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: tallySheetId,
+      range: `H${rowNumber}`,
+      valueInputOption: "RAW",
+      requestBody: { values: [[scoreNum]] },
+    });
+  }
+}
+*/
   return { today, nextCount, nextNotes, shouldIncrement };
 }
 // ============================
