@@ -2619,7 +2619,12 @@ if (!resolvedCustomerId && toEmail) {
       tallyResult = { skipped: true, reason: "idempotent_skip", today, shouldIncrement: false };
       console.log("🧷 TALLY_SKIP_DUPLICATE:", customerId, today, docToken);
     } else if (sheetId && customerId) {
-      tallyResult = await tallyApply(sheetId, customerId, docType, args.source, r2Key || undefined, docToken, ai);
+      // TEMP: disable tally sheet writes (prevents duplicate rows)
+        tallyResult = {
+        today: formatISO(toZonedTime(new Date(), TIMEZONE), { representation: "date" }),
+        nextCount: 1,
+        shouldIncrement: true,
+       };
 
       if ((tallyResult as any)?.shouldIncrement === false) {
         logInfo("TALLY_APPLY_SKIP_OK", {
