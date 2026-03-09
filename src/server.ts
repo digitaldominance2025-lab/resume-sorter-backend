@@ -2205,20 +2205,21 @@ async function appendResumeRow(
   await ensureSingleTabResumes(spreadsheetId);
   await ensureJobSectionExists(spreadsheetId, "Unsorted");
 
-  await appendResumeUnderJobSection({
-    spreadsheetId,
-    jobTitle: "Unsorted",
-    row: {
-      receivedAt: row.receivedAt,
-      source: row.source,
-      filename: row.filename,
-      score: row.score ?? null,
-      summary: safeStr(row.summary || "").slice(0, 5000),
-      r2Key: row.r2Key || "",
-      resumeLink: row.resumeLink || "",
-      requestId: row.requestId || "",
-    },
-  });
+  // TEMP: disabling duplicate sheet write
+// await appendResumeUnderJobSection({
+//   spreadsheetId,
+//   jobTitle: "Unsorted",
+//   row: {
+//     receivedAt: row.receivedAt,
+//     source: row.source,
+//     filename: row.filename,
+//     score: row.score ?? null,
+//     summary: safeStr(row.summary || "").slice(0, 5000),
+//     r2Key: row.r2Key || "",
+//     resumeLink: row.resumeLink || "",
+//     requestId: row.requestId || "",
+//   },
+// });
 
   devLog("📝 RESUME_SECTION_APPENDED:", spreadsheetId, row.requestId);
 }
