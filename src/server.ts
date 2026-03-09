@@ -4137,8 +4137,16 @@ if (criteria && typeof criteria === "object") {
 
     // Pull jobs/criteria from payload (Stripe signup flow)
     const jobsFromPayload: string[] = Array.isArray(payload?.jobs)
-      ? payload.jobs.map((x: any) => safeStr(x)).filter(Boolean)
-      : [];
+  ? payload.jobs
+      .map((x: any) => {
+        if (typeof x === "string") return safeStr(x);
+        if (x && typeof x === "object") {
+          return safeStr(x.title || x.jobTitle || x.name);
+        }
+        return "";
+      })
+      .filter(Boolean)
+  : [];
 
     const criteriaFromPayload: any = payload?.criteria ?? payload?.rubric ?? null;
 
