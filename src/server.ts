@@ -2177,7 +2177,7 @@ console.log("🧪 GENERAL_SUBMISSIONS_DEBUG", {
 
       summary: safeStr(row.reason || "").slice(0, 2000),
       r2Key: row.r2Key || "",
-      resumeLink: row.resumeLink || "",
+      resumeLink: row.resumeLink || `${BASE_URL}/r/${row.requestId}`,
       requestId: row.requestId || "",
     },
   });
