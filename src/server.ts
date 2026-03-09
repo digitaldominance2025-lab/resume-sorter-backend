@@ -146,7 +146,7 @@ const BASE_URL =
   safeStr(process.env.BASE_URL) ||
   (IS_PROD ? "https://goeasypaper.com" : "http://localhost:3000");
 
-  const ADMIN_EMAIL = process.env.ADMIN_EMAIL || "digitaldominance2025@gmail.com";
+  const ADMIN_EMAIL = process.env.ADMIN_EMAIL || "hello@goeasypaper.com";
 const MASTER_SHEET_ID = process.env.MASTER_CUSTOMERS_SHEET_ID || "";
 const MASTER_SHEET_TAB = process.env.MASTER_CUSTOMERS_SHEET_TAB || "customers";
 const NIGHTLY_CRON = process.env.NIGHTLY_CRON || "10 2 * * *";
@@ -2830,7 +2830,11 @@ if (!resolvedCustomerId && toEmail) {
       if (didIncrement && sheetId && customerId && isResumeDoc) {
         const scoreNum = Number(ai?.score);
         const score = Number.isFinite(scoreNum) ? scoreNum : null;
-
+        
+        // Always create resume link (even if score is null / unscored)
+        const resumeLink = `${BASE_URL}/r/${args.requestId}`;
+        const resumeLinkLabel = safeStr(filenameForEmail || args.filename || "Resume").replace(/"/g, '""');
+        const resumeLinkCell = `=HYPERLINK("${resumeLink}","${resumeLinkLabel}")`;
         const summary =
           safeStr(ai?.summary) ||
           safeStr(ai?.notes) ||
@@ -2872,7 +2876,7 @@ if (!resolvedCustomerId && toEmail) {
 
               // ✅ Hiring decision (simple + explainable)
               decision:
-                Number(score) >= 80 ? "CALL" : Number(score) >= 50 ? "MAYBE" : "NO",
+                Number(score) >= 61 ? "CALL" : Number(score) >= 41 ? "MAYBE" : "NO",
 
               summary: summary.slice(0, 2000),
               r2Key,
@@ -3069,7 +3073,7 @@ if (!resolvedCustomerId && toEmail) {
         `File: ${filenameForEmail}`,
         r2KeyForEmail ? `Reference ID: ${r2KeyForEmail}` : undefined,
         ``,
-        `Thank you for using Digital Dominance Resume Scoring.`,
+        `Thank you for using EasyPaper.`,
       ]
         .filter(Boolean)
         .join("\n");
@@ -3943,7 +3947,31 @@ app.get("/customers/jobs/list", async (req: Request, res: Response, next: any) =
     if (!customerId) return res.status(400).json({ ok: false, error: "missing_customerId" });
 
     const jobs = await listCustomerJobs(customerId);
-    return res.json({ ok: true, jobs });
+    return res.json({
+  ok: true,
+  jobs: (jobs || [])
+    .map((j: any, i: number) => {
+      const title =
+        typeof j === "string"
+          ? j.trim()
+          : typeof j?.title === "string"
+          ? j.title.trim()
+          : typeof j?.jobTitle === "string"
+          ? j.jobTitle.trim()
+          : typeof j?.name === "string"
+          ? j.name.trim()
+          : typeof j?.rubric?.jobTitle === "string"
+          ? j.rubric.jobTitle.trim()
+          : "";
+
+      return {
+        ...j,
+        id: safeStr(j?.id || title || `job-${i}`),
+        title,
+      };
+    })
+    .filter((j: any) => j.id && j.title),
+});
   } catch (e: any) {
     return next(e);
   }
@@ -4838,7 +4866,7 @@ try {
             </p>
 
             <div style="margin-top:18px;color:#888;font-size:12px;">
-              – Digital Dominance
+              – EasyPaper
             </div>
           </div>
         </div>
