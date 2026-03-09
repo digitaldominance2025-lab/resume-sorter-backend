@@ -51,12 +51,21 @@ class AppError extends Error {
 // Helpers
 // ============================
 // --- logging helper (dev-only noise) ---
+
+
 const devLog = (...args: any[]) => {
   const env = safeStr(process.env.NODE_ENV).toLowerCase();
   if (env !== "production") console.log(...args);
 };
 function safeStr(v: any) {
   return (v ?? "").toString().trim();
+}
+function makeMagicToken(): string {
+  return crypto.randomBytes(32).toString("hex");
+}
+
+function hashMagicToken(token: string): string {
+  return crypto.createHash("sha256").update(token).digest("hex");
 }
 function extractCandidateEmail(text: string): string | null {
   if (!text) return null;
@@ -504,7 +513,27 @@ async function ensureDbTables() {
     CREATE INDEX IF NOT EXISTS pending_signups_created_at_idx
     ON pending_signups(created_at)
   `);
-    console.log("✅ DB tables ensured");
+    await pool.query(`
+  CREATE TABLE IF NOT EXISTS manage_magic_links (
+    id TEXT PRIMARY KEY,
+    customer_id TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    expires_at TIMESTAMPTZ NOT NULL,
+    used_at TIMESTAMPTZ NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )
+`);
+
+await pool.query(`
+  CREATE INDEX IF NOT EXISTS manage_magic_links_customer_id_idx
+  ON manage_magic_links(customer_id)
+`);
+
+await pool.query(`
+  CREATE INDEX IF NOT EXISTS manage_magic_links_expires_at_idx
+  ON manage_magic_links(expires_at)
+`);
+  console.log("✅ DB tables ensured");
   } catch (e: any) {
     console.warn("⚠️ DB bootstrap failed (continuing):", e?.message || e);
   }
@@ -532,8 +561,57 @@ async function upsertCustomerRubric(customerId: string, rubric: any) {
     throw new AppError("db_error_upserting_rubric", 500, "db_error", false);
   }
 }
+async function createManageMagicLink(args: {
+  customerId: string;
+  expiresInHours?: number;
+}): Promise<{ token: string; expiresAtISO: string }> {
+  const customerId = safeStr(args.customerId);
+  const expiresInHours = Number(args.expiresInHours || 48);
 
+  if (!customerId) {
+    throw new AppError("missing_customerId", 400, "missing_customerId", true);
+  }
 
+  const token = makeMagicToken();
+  const tokenHash = hashMagicToken(token);
+  const id = crypto.randomUUID();
+  const expiresAt = new Date(Date.now() + expiresInHours * 60 * 60 * 1000);
+
+  await pool.query(
+    `
+    INSERT INTO manage_magic_links (id, customer_id, token_hash, expires_at)
+    VALUES ($1, $2, $3, $4)
+    `,
+    [id, customerId, tokenHash, expiresAt.toISOString()]
+  );
+
+  return {
+    token,
+    expiresAtISO: expiresAt.toISOString(),
+  };
+}
+async function consumeManageMagicLink(token: string): Promise<{ customerId: string } | null> {
+  const rawToken = safeStr(token);
+  if (!rawToken) return null;
+
+  const tokenHash = hashMagicToken(rawToken);
+
+  const r = await pool.query(
+    `
+    SELECT customer_id
+    FROM manage_magic_links
+    WHERE token_hash = $1
+      AND expires_at > NOW()
+    LIMIT 1
+    `,
+    [tokenHash]
+  );
+
+  const customerId = safeStr(r.rows?.[0]?.customer_id);
+  if (!customerId) return null;
+
+  return { customerId };
+}
 async function getCustomerRubric(customerId: string): Promise<any | null> {
   if (!customerId) return null;
 
@@ -2223,7 +2301,35 @@ async function appendResumeRow(
 
   devLog("📝 RESUME_SECTION_APPENDED:", spreadsheetId, row.requestId);
 }
+// ============================
+// Lock sheet read-only helper
+// ============================
+async function setSheetReadOnly(spreadsheetId: string) {
+  const drive = google.drive({ version: "v3", auth: oauth2Client });
 
+  const perms = await drive.permissions.list({
+    fileId: spreadsheetId,
+    fields: "permissions(id,emailAddress,role)",
+  });
+
+  const permissions = perms.data.permissions || [];
+
+  for (const p of permissions) {
+    if (!p.id) continue;
+
+    if (p.role === "writer") {
+      try {
+        await drive.permissions.update({
+          fileId: spreadsheetId,
+          permissionId: p.id,
+          requestBody: { role: "reader" },
+        });
+      } catch (e: any) {
+        console.warn("⚠️ SHEET_PERMISSION_UPDATE_FAILED:", e?.message || e);
+      }
+    }
+  }
+}
 
 // ============================
 // Tally sheet creation
@@ -3799,6 +3905,28 @@ app.post("/customers/jobs/create", async (req: Request, res: Response, next: any
 });
 
 // list jobs
+app.post("/manage/exchange", async (req: Request, res: Response, next: any) => {
+  try {
+    const token = safeStr(req.body?.token);
+
+    if (!token) {
+      return res.status(400).json({ ok: false, error: "missing_token" });
+    }
+
+    const result = await consumeManageMagicLink(token);
+
+    if (!result?.customerId) {
+      return res.status(401).json({ ok: false, error: "invalid_or_expired_token" });
+    }
+
+    return res.json({
+      ok: true,
+      customerId: result.customerId,
+    });
+  } catch (e: any) {
+    return next(e);
+  }
+});
 app.get("/customers/jobs/list", async (req: Request, res: Response, next: any) => {
   try {
     const customerId = safeStr(req.query.customerId);
@@ -4043,7 +4171,8 @@ if (criteria && typeof criteria === "object") {
     invalidateCustomersCache();
 
         const sheetUrl = tallySheetUrl || `https://docs.google.com/spreadsheets/d/${tallySheetId}`;
-    const manageUrl = `${APP_URL}/manage?customerId=${encodeURIComponent(customerId)}`;
+        const manageMagic = await createManageMagicLink({ customerId, expiresInHours: 48 });
+        const manageUrl = `${APP_URL}/manage?token=${encodeURIComponent(manageMagic.token)}`;
 
     console.log("📧 ABOUT_TO_SEND_ACTIVATION_EMAIL", {
       adminEmail: safeStr(adminEmail),
@@ -4621,6 +4750,15 @@ const isEndingSoon = isTrial && trialEnds > cutoffUtc && trialEnds <= soonUtc;
 
 if (isEnded) {
   await updateCustomerStatusInMasterSheet(c.customerId, "trial_ended");
+  // Lock sheet to read-only when trial ends
+try {
+  if (c.tallySheetId) {
+    await setSheetReadOnly(c.tallySheetId);
+    console.log("🔒 SHEET_LOCKED_TRIAL_ENDED:", c.customerId);
+  }
+} catch (e: any) {
+  console.warn("⚠️ SHEET_LOCK_FAILED:", e?.message || e);
+}
   lines.push(`TRIAL ENDED: ${c.companyName} (${c.customerId}) -> trial_ended`);
  } else if (isEndingSoon) {
     lines.push(`TRIAL ENDING SOON: ${c.companyName} ends ${c.trialEndsAtISO}`);
@@ -4656,7 +4794,8 @@ if (isEnded) {
 
       const sheetUrl = `https://docs.google.com/spreadsheets/d/${sheetId}`;
       const customerId = safeStr(c.customerId);
-      const manageJobsUrl = `${BASE_URL}/manage?customerId=${encodeURIComponent(customerId)}`;
+      const manageMagic = await createManageMagicLink({ customerId, expiresInHours: 48 });
+      const manageJobsUrl = `${BASE_URL}/manage?token=${encodeURIComponent(manageMagic.token)}`;
 
       const subject = "Your updated resume sheet is ready";
         const html = `
