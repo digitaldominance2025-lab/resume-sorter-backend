@@ -3770,9 +3770,13 @@ app.post("/customers/jobs/create", async (req: Request, res: Response, next: any
       rubric = parsed ?? { text: rubric };
     }
 
-    if (!rubric || typeof rubric !== "object") {
-      return res.status(400).json({ ok: false, error: "missing_rubric" });
-    }
+    // If no rubric provided, create a default one
+    if (!rubric || typeof rubric !== "object" || Object.keys(rubric).length === 0) {
+     rubric = {
+      criteria:
+      "Evaluate the candidate for this role based on relevant skills, experience, and overall fit for the position.",
+  };
+}
 
         const job = await createCustomerJob(customerId, title, rubric);
 
