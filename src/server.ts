@@ -2586,7 +2586,7 @@ if (!resolvedCustomerId && toEmail) {
               const jobs = await listCustomerJobs(customerId);
               const { matchedJobId } = await classifyResumeToJob(extractedText, jobs);
 
-              if (matchedJobId) {
+              if (matchedJobId && !ai?.skipped) {
                 const recent = await hasRecentApplication({
                   customerId,
                   candidateKey,
