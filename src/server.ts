@@ -2623,8 +2623,9 @@ if (!resolvedCustomerId && toEmail) {
   const blocked = !!customerId && gate.allowed === false;
   const blockedReason = blocked ? gate.reason || "billing_block" : null;
 
-  const rubric = customerId ? await getCustomerRubric(customerId) : null;
-
+  const customerRubric = customerId ? await getCustomerRubric(customerId) : null;
+  let matchedJobRubric: any = null;
+  let matchedJobId = "";
   // ----------------------------
   // AI scoring (with idempotency)
   // ----------------------------
@@ -2678,10 +2679,21 @@ if (!resolvedCustomerId && toEmail) {
             ai = { skipped: true, reason: "idempotent_skip" };
             console.log("🧷 AI_IDEMPOTENT_SKIP:", customerId, today, docToken);
           } else {
-            const forAi = extractedText.slice(0, MAX_OPENAI_CHARS);
-            const candidateEmail = extractCandidateEmail(extractedText);
-            ai = await safeScoreResume(forAi, rubric);
+             const forAi = extractedText.slice(0, MAX_OPENAI_CHARS);
 
+            try {
+               const jobs = await listCustomerJobs(customerId);
+               const classified = await classifyResumeToJob(extractedText, jobs);
+               matchedJobId = safeStr(classified?.matchedJobId);
+               const matchedJob = jobs.find((j: any) => safeStr(j.id) === matchedJobId);
+               matchedJobRubric = matchedJob?.rubric ?? null;
+               } catch (e: any) {
+              console.warn("⚠️ MATCHED_JOB_RUBRIC_LOOKUP_FAILED:", e?.message || e);
+              matchedJobRubric = null;
+            }
+
+            const candidateEmail = extractCandidateEmail(extractedText);
+            ai = await safeScoreResume(forAi, matchedJobRubric || customerRubric);
               if (candidateEmail) {
               console.log("📧 CANDIDATE_EMAIL_DETECTED:", candidateEmail);
                 }         
@@ -2689,10 +2701,7 @@ if (!resolvedCustomerId && toEmail) {
             try {
               const candidateKey = sha256Hex(extractedText.slice(0, 2000));
 
-              const jobs = await listCustomerJobs(customerId);
-              const { matchedJobId } = await classifyResumeToJob(extractedText, jobs);
-
-              if (matchedJobId && !ai?.skipped) {
+                if (matchedJobId && !ai?.skipped) {
                 const recent = await hasRecentApplication({
                   customerId,
                   candidateKey,
@@ -3878,11 +3887,12 @@ app.post("/customers/jobs/create", async (req: Request, res: Response, next: any
 
     // If no rubric provided, create a default one
     if (!rubric || typeof rubric !== "object" || Object.keys(rubric).length === 0) {
-     rubric = {
-      criteria:
-      "Evaluate the candidate for this role based on relevant skills, experience, and overall fit for the position.",
-  };
-}
+      rubric = {
+        jobTitle: title,
+        criteria:
+          `Evaluate the candidate for the role "${title}" based on relevant skills, experience, and overall fit for the position.`,
+      };
+    }
 
         const job = await createCustomerJob(customerId, title, rubric);
 
