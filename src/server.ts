@@ -3950,27 +3950,32 @@ app.get("/customers/jobs/list", async (req: Request, res: Response, next: any) =
     return res.json({
   ok: true,
   jobs: (jobs || [])
-    .map((j: any, i: number) => {
-      const title =
-        typeof j === "string"
-          ? j.trim()
-          : typeof j?.title === "string"
-          ? j.title.trim()
-          : typeof j?.jobTitle === "string"
-          ? j.jobTitle.trim()
-          : typeof j?.name === "string"
-          ? j.name.trim()
-          : typeof j?.rubric?.jobTitle === "string"
-          ? j.rubric.jobTitle.trim()
-          : "";
+  .map((j: any, i: number) => {
+    const rawTitle =
+      typeof j === "string"
+        ? j.trim()
+        : typeof j?.title === "string"
+        ? j.title.trim()
+        : typeof j?.jobTitle === "string"
+        ? j.jobTitle.trim()
+        : typeof j?.name === "string"
+        ? j.name.trim()
+        : "";
 
-      return {
-        ...j,
-        id: safeStr(j?.id || title || `job-${i}`),
-        title,
-      };
-    })
-    .filter((j: any) => j.id && j.title),
+    const title =
+      rawTitle && rawTitle !== "[object Object]"
+        ? rawTitle
+        : typeof j?.rubric?.jobTitle === "string"
+        ? j.rubric.jobTitle.trim()
+        : "";
+
+    return {
+      ...j,
+      id: safeStr(j?.id || title || `job-${i}`),
+      title,
+    };
+  })
+  .filter((j: any) => j.id && j.title),
 });
   } catch (e: any) {
     return next(e);
