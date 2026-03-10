@@ -1936,7 +1936,6 @@ async function getSheetIdByTitle(spreadsheetId: string, title: string): Promise<
   const id = found?.properties?.sheetId;
   return Number.isFinite(id) ? Number(id) : null;
 }
-
 async function readResumesTabValues(spreadsheetId: string): Promise<string[][]> {
   const sheets = google.sheets({ version: "v4", auth: oauth2Client });
   const TAB = "Resumes";
@@ -1958,7 +1957,7 @@ async function readResumesTabValues(spreadsheetId: string): Promise<string[][]> 
     const meaningful = row.some((c, idx) => {
       const v = safeStr(c).trim();
       if (!v) return false;
-      if (idx === 6 && v.toUpperCase() === "FALSE") return false; // ignore unchecked checkbox artifact
+      if (idx === 6 && v.toUpperCase() === "FALSE") return false;
       return true;
     });
 
@@ -1967,6 +1966,7 @@ async function readResumesTabValues(spreadsheetId: string): Promise<string[][]> 
 
   return lastMeaningful >= 0 ? rows.slice(0, lastMeaningful + 1) : [];
 }
+
 function jobHeaderCell(jobTitle: string) {
   return `${JOB_HEADER_PREFIX} ${safeStr(jobTitle)}`.trim();
 }
@@ -1979,32 +1979,38 @@ function isJobHeaderRow(row: string[]) {
 function findJobSectionStart(values: string[][], jobTitle: string): number {
   const want = jobHeaderCell(jobTitle);
   for (let i = 0; i < values.length; i++) {
-    if (safeStr(values[i]?.[0]) === want) return i; // 0-based
+    if (safeStr(values[i]?.[0]) === want) return i;
   }
   return -1;
 }
 
 function findJobSectionEnd(values: string[][], start0: number): number {
-  // end is the first next job header OR end of sheet
   for (let i = start0 + 1; i < values.length; i++) {
-    if (isJobHeaderRow(values[i])) return i; // 0-based start of next section
+    if (isJobHeaderRow(values[i] || [])) return i;
   }
-  return values.length; // end of sheet
+
+  for (let i = values.length - 1; i >= start0; i--) {
+    const row = values[i] || [];
+    if (rowHasMeaningfulContent(row)) {
+      return i + 1;
+    }
+  }
+
+  return start0 + 2;
 }
+
 function rowHasMeaningfulContent(row: string[]) {
   return row.some((c, idx) => {
     const v = safeStr(c).trim();
 
-    // Ignore empty cells
     if (!v) return false;
 
-    // Ignore unchecked checkbox artifact in column G ("Called")
-    // Google Sheets can return FALSE for checkbox cells even when the row is otherwise empty.
     if (idx === 6 && v.toUpperCase() === "FALSE") return false;
 
     return true;
   });
 }
+
 function isBlankRow(row: string[]) {
   return !rowHasMeaningfulContent(row);
 }
@@ -2014,24 +2020,28 @@ async function appendJobSectionAtBottom(spreadsheetId: string, jobTitle: string)
 
   const existing = await readResumesTabValues(spreadsheetId);
 
-  // If section already exists, do nothing
+  // Already exists
   const alreadyAt = findJobSectionStart(existing, jobTitle);
   if (alreadyAt !== -1) return;
 
-  // Find the last REAL job section near the top of the sheet and append after it.
-  // Do NOT trust random artifact rows farther down.
-  let lastSectionStart0 = -1;
+  // Find all real JOB section starts
+  const sectionStarts: number[] = [];
   for (let i = 0; i < existing.length; i++) {
     if (isJobHeaderRow(existing[i] || [])) {
-      lastSectionStart0 = i;
+      sectionStarts.push(i);
     }
   }
 
   let startRow1 = 1;
 
-  if (lastSectionStart0 !== -1) {
-    const afterLastSection0 = findJobSectionEnd(existing, lastSectionStart0);
-    startRow1 = afterLastSection0 + 2; // 1 blank spacer row, then new JOB row
+  if (sectionStarts.length === 0) {
+    startRow1 = 1;
+  } else {
+    const lastSectionStart0 = sectionStarts[sectionStarts.length - 1];
+    const lastSectionEnd0 = findJobSectionEnd(existing, lastSectionStart0);
+
+    // leave exactly one blank row after the previous section
+    startRow1 = lastSectionEnd0 + 2;
   }
 
   const headerRow1 = startRow1;
@@ -2040,7 +2050,7 @@ async function appendJobSectionAtBottom(spreadsheetId: string, jobTitle: string)
   console.log("🧪 JOB_SECTION_APPEND_DEBUG", {
     spreadsheetId,
     jobTitle,
-    lastSectionStart0,
+    sectionStarts,
     startRow1,
     headerRow1,
     columnsRow1,
@@ -2060,78 +2070,59 @@ async function appendJobSectionAtBottom(spreadsheetId: string, jobTitle: string)
 
   const updatedValues = await readResumesTabValues(spreadsheetId);
   const start0 = findJobSectionStart(updatedValues, jobTitle);
+  const sheetId = await getSheetIdByTitle(spreadsheetId, TAB);
 
-  if (start0 !== -1) {
-    const sheetId = await getSheetIdByTitle(spreadsheetId, TAB);
-
-    if (sheetId !== null) {
-      await sheets.spreadsheets.batchUpdate({
-        spreadsheetId,
-        requestBody: {
-          requests: [
-            {
-              repeatCell: {
-                range: {
-                  sheetId,
-                  startRowIndex: start0 + 1,
-                  endRowIndex: start0 + 2,
-                  startColumnIndex: 0,
-                  endColumnIndex: 8,
-                },
-                cell: {
-                  userEnteredFormat: {
-                    backgroundColor: {
-                      red: 0.2,
-                      green: 0.2,
-                      blue: 0.2,
-                    },
-                    textFormat: {
-                      bold: true,
-                      foregroundColor: {
-                        red: 1,
-                        green: 1,
-                        blue: 1,
-                      },
-                    },
-                    horizontalAlignment: "CENTER",
+  if (start0 !== -1 && sheetId !== null) {
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId,
+      requestBody: {
+        requests: [
+          {
+            repeatCell: {
+              range: {
+                sheetId,
+                startRowIndex: start0,
+                endRowIndex: start0 + 1,
+                startColumnIndex: 0,
+                endColumnIndex: 8,
+              },
+              cell: {
+                userEnteredFormat: {
+                  backgroundColor: { red: 0.75, green: 0.10, blue: 0.10 },
+                  textFormat: {
+                    bold: true,
+                    foregroundColor: { red: 1, green: 1, blue: 1 },
                   },
                 },
-                fields: "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
               },
+              fields: "userEnteredFormat.backgroundColor,userEnteredFormat.textFormat",
             },
-            {
-              repeatCell: {
-                range: {
-                  sheetId,
-                  startRowIndex: start0,
-                  endRowIndex: start0 + 1,
-                  startColumnIndex: 0,
-                  endColumnIndex: 8,
-                },
-                cell: {
-                  userEnteredFormat: {
-                    backgroundColor: {
-                      red: 0.75,
-                      green: 0.10,
-                      blue: 0.10,
-                    },
-                    textFormat: {
-                      bold: true,
-                      foregroundColor: {
-                        red: 1,
-                        green: 1,
-                        blue: 1,
-                      },
-                    },
+          },
+          {
+            repeatCell: {
+              range: {
+                sheetId,
+                startRowIndex: start0 + 1,
+                endRowIndex: start0 + 2,
+                startColumnIndex: 0,
+                endColumnIndex: 8,
+              },
+              cell: {
+                userEnteredFormat: {
+                  backgroundColor: { red: 0.2, green: 0.2, blue: 0.2 },
+                  textFormat: {
+                    bold: true,
+                    foregroundColor: { red: 1, green: 1, blue: 1 },
                   },
+                  horizontalAlignment: "CENTER",
                 },
-                fields: "userEnteredFormat(backgroundColor,textFormat)",
               },
+              fields: "userEnteredFormat.backgroundColor,userEnteredFormat.textFormat,userEnteredFormat.horizontalAlignment",
             },
-          ],
-        },
-      });
-    }
+          },
+        ],
+      },
+    });
   }
 }
 async function ensureJobSectionExists(spreadsheetId: string, jobTitle: string): Promise<void> {
