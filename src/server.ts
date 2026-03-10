@@ -3775,17 +3775,17 @@ app.get("/r/:requestId", async (req: Request, res: Response, next: any) => {
     }
 
     // 1) Lookup inbound doc by requestId
-    const r = await pool.query(
+        const r = await pool.query(
       `
       SELECT request_id, customer_id, resolved_customer_id, r2_key, doc_type
       FROM inbound_docs
       WHERE request_id = $1
+         OR id::text = $1
       ORDER BY created_at DESC
       LIMIT 1
       `,
       [requestId]
     );
-
     const row = r.rows?.[0];
     const r2Key = safeStr(row?.r2_key);
     const custId = safeStr(row?.resolved_customer_id || row?.customer_id);
@@ -4265,7 +4265,7 @@ if (criteria && typeof criteria === "object") {
             </div>
 
             <p style="margin:16px 0 0 0;color:#333;font-size:14px;line-height:1.5;">
-              Send job ads + resumes to that intake email. We'll score + sort them into your sheet automatically.
+              Use this email address in your hiring adds.  We'll score + sort them into your sheet automatically.
             </p>
 
             <div style="margin-top:18px;color:#888;font-size:12px;">
