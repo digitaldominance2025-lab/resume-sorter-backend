@@ -1947,9 +1947,26 @@ async function readResumesTabValues(spreadsheetId: string): Promise<string[][]> 
   });
 
   const vals = (resp.data.values || []) as any[];
-  return vals.map((r) => (Array.isArray(r) ? r.map((c) => safeStr(c)) : []));
-}
+  const rows = vals.map((r) => (Array.isArray(r) ? r.map((c) => safeStr(c)) : []));
 
+  // Trim trailing rows that are only checkbox artifacts, e.g. column G = FALSE
+  let lastMeaningful = -1;
+
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i] || [];
+
+    const meaningful = row.some((c, idx) => {
+      const v = safeStr(c).trim();
+      if (!v) return false;
+      if (idx === 6 && v.toUpperCase() === "FALSE") return false; // ignore unchecked checkbox artifact
+      return true;
+    });
+
+    if (meaningful) lastMeaningful = i;
+  }
+
+  return lastMeaningful >= 0 ? rows.slice(0, lastMeaningful + 1) : [];
+}
 function jobHeaderCell(jobTitle: string) {
   return `${JOB_HEADER_PREFIX} ${safeStr(jobTitle)}`.trim();
 }
