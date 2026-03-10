@@ -145,6 +145,10 @@ const IS_PROD = NODE_ENV === "production";
 const BASE_URL =
   safeStr(process.env.BASE_URL) ||
   (IS_PROD ? "https://goeasypaper.com" : "http://localhost:3000");
+  const API_BASE_URL =
+  safeStr(process.env.API_BASE_URL) ||
+  safeStr(process.env.RENDER_EXTERNAL_URL) ||
+  (IS_PROD ? "https://resume-sorter-backend.onrender.com" : `http://localhost:${PORT}`);
 
   const ADMIN_EMAIL = process.env.ADMIN_EMAIL || "hello@goeasypaper.com";
 const MASTER_SHEET_ID = process.env.MASTER_CUSTOMERS_SHEET_ID || "";
@@ -2833,7 +2837,7 @@ if (!resolvedCustomerId && toEmail) {
       const sheetId = safeStr(match?.tallySheetId);
       const isResumeDoc = docType === "RESUME";
       const r2Key = safeStr(args?.r2?.key || "");
-      const resumeLink = `${BASE_URL}/r/${args.requestId}`;
+      const resumeLink = `${API_BASE_URL}/r/${args.requestId}`;
       const resumeLinkLabel = safeStr(filenameForEmail || args.filename || "Resume")
         .replace(/\.(pdf|docx|txt)$/i, "")
         .replace(/[_-]+/g, " ")
@@ -2847,7 +2851,7 @@ if (!resolvedCustomerId && toEmail) {
         const score = Number.isFinite(scoreNum) ? scoreNum : null;
         
         // Always create resume link (even if score is null / unscored)
-        const resumeLink = `${BASE_URL}/r/${args.requestId}`;
+        const resumeLink = `${API_BASE_URL}/r/${args.requestId}`;
         const resumeLinkLabel = safeStr(filenameForEmail || args.filename || "Resume").replace(/"/g, '""');
         const resumeLinkCell = `=HYPERLINK("${resumeLink}","${resumeLinkLabel}")`;
         const summary =
