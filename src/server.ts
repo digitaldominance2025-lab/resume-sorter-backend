@@ -1606,7 +1606,7 @@ async function applyResumesSheetLayout(args: {
   console.log("🧪 APPLY_RESUMES_LAYOUT_DEBUG", {
     spreadsheetId: args.spreadsheetId,
     sheetId: args.sheetId,
-    widths: { A: 160, B: 110, C: 140, D: 500, E: 180 },
+    widths: { A: 160, B: 110, C: 140, D: 500, E: 180, F: 240, G: 100, H: 260 },
   });
 
   await args.sheets.spreadsheets.batchUpdate({
@@ -1684,6 +1684,42 @@ async function applyResumesSheetLayout(args: {
             fields: "pixelSize",
           },
         },
+        {
+          updateDimensionProperties: {
+            range: {
+              sheetId: args.sheetId,
+              dimension: "COLUMNS",
+              startIndex: 5, // F = Supporting Documents
+              endIndex: 6,
+            },
+            properties: { pixelSize: 240 },
+            fields: "pixelSize",
+          },
+        },
+        {
+          updateDimensionProperties: {
+            range: {
+              sheetId: args.sheetId,
+              dimension: "COLUMNS",
+              startIndex: 6, // G = Called
+              endIndex: 7,
+            },
+            properties: { pixelSize: 100 },
+            fields: "pixelSize",
+          },
+        },
+        {
+          updateDimensionProperties: {
+            range: {
+              sheetId: args.sheetId,
+              dimension: "COLUMNS",
+              startIndex: 7, // H = Notes
+              endIndex: 8,
+            },
+            properties: { pixelSize: 260 },
+            fields: "pixelSize",
+          },
+        },
       ],
     },
   });
@@ -1754,6 +1790,9 @@ const RESUME_COL_HEADERS = [
   "Decision",
   "Summary",
   "Link",
+  "Supporting Documents",
+  "Called",
+  "Notes",
 ];
 
 // ✅ ONE TAB ONLY: rename first tab to "Resumes" and delete all others
@@ -1815,7 +1854,7 @@ async function readResumesTabValues(spreadsheetId: string): Promise<string[][]> 
 
   const resp = await sheets.spreadsheets.values.get({
     spreadsheetId,
-    range: `${TAB}!A1:E5000`,
+    range: `${TAB}!A1:H5000`,
   });
 
   const vals = (resp.data.values || []) as any[];
@@ -1861,14 +1900,13 @@ async function appendJobSectionAtBottom(spreadsheetId: string, jobTitle: string)
 
   const sectionRows: any[] = [];
 
-  if (hasAny) sectionRows.push(["", "", "", "", ""]); // spacer (5 cols)
+  if (hasAny) sectionRows.push(["", "", "", "", "", "", "", ""]); // spacer (8 cols)
 
-  sectionRows.push([jobHeaderCell(jobTitle), "", "", "", ""]); // job header row (5 cols)
-  sectionRows.push([...RESUME_COL_HEADERS]); // column headers row (must be 9 cols)
-
+sectionRows.push([jobHeaderCell(jobTitle), "", "", "", "", "", "", ""]); // job header row (8 cols)
+sectionRows.push([...RESUME_COL_HEADERS]); // column headers row (8 cols)
   await sheets.spreadsheets.values.append({
     spreadsheetId,
-    range: `${TAB}!A:E`,
+    range: `${TAB}!A:H`,
     valueInputOption: "RAW",
     insertDataOption: "INSERT_ROWS",
     requestBody: { values: sectionRows },
@@ -1894,7 +1932,7 @@ async function appendJobSectionAtBottom(spreadsheetId: string, jobTitle: string)
                   startRowIndex: start0 + 1,
                   endRowIndex: start0 + 2,
                   startColumnIndex: 0,
-                  endColumnIndex: 5,
+                  endColumnIndex: 8,
                 },
                 cell: {
                   userEnteredFormat: {
@@ -1926,7 +1964,7 @@ async function appendJobSectionAtBottom(spreadsheetId: string, jobTitle: string)
                   startRowIndex: start0,
                   endRowIndex: start0 + 1,
                   startColumnIndex: 0,
-                  endColumnIndex: 5,
+                  endColumnIndex: 8,
                 },
                 cell: {
                   userEnteredFormat: {
@@ -1973,13 +2011,13 @@ async function appendResumeUnderJobSection(args: {
     source: string;
     filename: string;
     score: number | null;
-
-    // ✅ New column
     decision?: string;
-
     summary: string;
     r2Key: string;
     resumeLink?: string;
+    supportingDocuments?: string;
+    called?: string;
+    notes?: string;
     requestId: string;
   };
 }) {
@@ -2020,7 +2058,7 @@ if (start0 === -1) {
 if (sheetId == null) {
   await sheets.spreadsheets.values.append({
     spreadsheetId: args.spreadsheetId,
-    range: `${TAB}!A:E`,
+    range: `${TAB}!A:H`,
     valueInputOption: "USER_ENTERED",
     insertDataOption: "INSERT_ROWS",
     requestBody: {
@@ -2030,6 +2068,9 @@ if (sheetId == null) {
         args.row.decision ?? "",
         args.row.summary || "",
         args.row.resumeLink || "",
+        args.row.supportingDocuments || "",
+        safeStr(args.row.called || "NO").toUpperCase(),
+        args.row.notes || "",
       ]],
     },
   });
@@ -2065,6 +2106,9 @@ const rowValues = [[
   args.row.decision ?? "",
   args.row.summary || "",
   args.row.resumeLink || "",
+  args.row.supportingDocuments || "",
+  safeStr(args.row.called || "NO").toUpperCase(),
+  args.row.notes || "",
 ]];
 
 console.log("🧪 SHEET_WRITE_DEBUG", {
@@ -2087,7 +2131,7 @@ await sheets.spreadsheets.batchUpdate({
             startRowIndex: insertAt0,
             endRowIndex: insertAt0 + 1,
             startColumnIndex: 0, // A
-            endColumnIndex: 5,   // E
+            endColumnIndex: 8,   // H
           },
           cell: {
             userEnteredFormat: {
@@ -2110,13 +2154,13 @@ await sheets.spreadsheets.batchUpdate({
 // Clear values only after format reset
 await sheets.spreadsheets.values.clear({
   spreadsheetId: args.spreadsheetId,
-  range: `${TAB}!A${rowNumber}:E${rowNumber}`,
+  range: `${TAB}!A${rowNumber}:H${rowNumber}`,
 });
 
 // Write clean values
 await sheets.spreadsheets.values.update({
   spreadsheetId: args.spreadsheetId,
-  range: `${TAB}!A${rowNumber}:E${rowNumber}`,
+  range: `${TAB}!A${rowNumber}:H${rowNumber}`,
   valueInputOption: "USER_ENTERED",
   requestBody: {
     values: rowValues,
@@ -2245,24 +2289,7 @@ console.log("🧪 GENERAL_SUBMISSIONS_DEBUG", {
   reason: row.reason,
   r2Key: row.r2Key,
 });
-  await appendResumeUnderJobSection({
-    spreadsheetId,
-    jobTitle: "General Submissions",
-    row: {
-      receivedAt: row.receivedAt,
-      source: row.source,
-      filename: row.filename,
-      score: null,
-
-      // ✅ Anything in General Submissions is an automatic NO
-      decision: "NO",
-
-      summary: safeStr(row.reason || "").slice(0, 2000),
-      r2Key: row.r2Key || "",
-      resumeLink: row.resumeLink || `${BASE_URL}/r/${row.requestId}`,
-      requestId: row.requestId || "",
-    },
-  });
+  
 
   devLog("📝 GENERAL_SUBMISSION_SECTION_APPENDED:", spreadsheetId, row.requestId);
 }
@@ -2502,6 +2529,7 @@ async function processInboundDoc(args: {
   docType?: "RESUME" | "NON_RESUME";
   customerId?: string;
   toEmail?: string;
+  supportingDocuments?: string[];
   r2?: { bucket: string; key: string } | null;
   savedLocal?: string | null;
   deletedLocal?: boolean;
@@ -2804,9 +2832,11 @@ if (!resolvedCustomerId && toEmail) {
     console.error("   ↳ data:", JSON.stringify(data));
     tallyResult = { error: "tally_failed", status, data, message: String(e?.message || e) };
   }
-
   const textPreview = String(extractedText || "").slice(0, 400);
   const candidateEmail = extractCandidateEmail(extractedText || "");
+  const supportingDocumentsCell = Array.isArray(args.supportingDocuments)
+  ? args.supportingDocuments.map((x) => safeStr(x)).filter(Boolean).join(", ")
+  : "";
   
   const aiScoreNum = Number(ai?.score);
   await saveInboundDocToDb({
@@ -2900,6 +2930,9 @@ if (!resolvedCustomerId && toEmail) {
               summary: summary.slice(0, 2000),
               r2Key,
               resumeLink: resumeLinkCell,
+              supportingDocuments: supportingDocumentsCell,
+              called: "NO",
+              notes: "",
               requestId: args.requestId,
             },
           });
@@ -2919,19 +2952,23 @@ if (!resolvedCustomerId && toEmail) {
             : `ai_skipped:${safeStr(ai?.reason) || "unknown"}`;
 
           await appendResumeUnderJobSection({
-            spreadsheetId: sheetId,
-            jobTitle: "General Submissions",
-            row: {
-              receivedAt: new Date().toISOString(),
-              source: args.source,
-              filename: safeStr(args.filename),
-              score: null, // ✅ no score for General Submissions
-              summary: reasonText.slice(0, 2000), // ✅ store why it went here
-              r2Key,
-              resumeLink: resumeLinkCell,
-              requestId: args.requestId,
-            },
-          });
+  spreadsheetId: sheetId,
+  jobTitle: "General Submissions",
+  row: {
+    receivedAt: new Date().toISOString(),
+    source: args.source,
+    filename: safeStr(args.filename),
+    score: null, // ✅ no score for General Submissions
+    decision: "NO",
+    summary: reasonText.slice(0, 2000), // ✅ store why it went here
+    r2Key,
+    resumeLink: resumeLinkCell,
+    supportingDocuments: supportingDocumentsCell,
+    called: "NO",
+    notes: "",
+    requestId: args.requestId,
+  },
+});
 
           devLog("🧾 ROUTED_GENERAL_SUBMISSION:", {
             requestId: args.requestId,
@@ -3463,17 +3500,20 @@ app.post(
       if (!toEmail) return res.json({ ok: true, fetched: true, processed: false, reason: "missing_to" });
 
       const atts = await resendListReceivedAttachments(emailId);
+      const attachmentNames = atts
+         .map((a) => safeStr(a?.filename))
+         .filter(Boolean);
       console.log("🧪 RESEND_ATTACHMENTS", {
-  emailId,
-  toEmail,
-  attachmentCount: atts.length,
-  attachments: atts.map((a: any) => ({
-    id: safeStr(a?.id),
-    filename: safeStr(a?.filename),
-    size: Number(a?.size || 0),
-    hasDownloadUrl: !!safeStr(a?.download_url),
-  })),
-});
+      emailId,
+      toEmail,
+      attachmentCount: atts.length,
+      attachments: atts.map((a: any) => ({
+      id: safeStr(a?.id),
+      filename: safeStr(a?.filename),
+      size: Number(a?.size || 0),
+      hasDownloadUrl: !!safeStr(a?.download_url),
+     })),
+    });
       const processed: any[] = [];
 
       if (atts.length) {
@@ -3612,17 +3652,18 @@ app.post(
             extractedText.trim().length > 0 ? classifyDocTypeFromText(extractedText) : "NON_RESUME";
 
           const result = await processInboundDoc({
-            requestId: getRequestId(req),
-            source: "resend",
-            filename: safeName,
-            buffer: buf,
-            extractedText,
-            docType,
-            toEmail,
-            r2,
-            savedLocal: null,
-            deletedLocal: true,
-          });
+  requestId: getRequestId(req),
+  source: "resend",
+  filename: safeName,
+  buffer: buf,
+  extractedText,
+  docType,
+  toEmail,
+  supportingDocuments: attachmentNames.filter((n: string) => n !== safeName),
+  r2,
+  savedLocal: null,
+  deletedLocal: true,
+});
 
           processed.push({ ok: true, filename: safeName, r2Key: r2.key, docType, result });
         }
@@ -4768,19 +4809,19 @@ if (body == null || typeof body !== "object") {
         extractedText.trim().length > 0
           ? classifyDocTypeFromText(extractedText)
           : "NON_RESUME";
-
       const result = await processInboundDoc({
-        requestId: getRequestId(req),
-        source: "inbound-r2",
-        filename,
-        buffer,
-        extractedText,
-        docType,
-        toEmail,
-        r2: { bucket, key },
-        savedLocal: null,
-        deletedLocal: true,
-      });
+  requestId: getRequestId(req),
+  source: "inbound-r2",
+  filename,
+  buffer,
+  extractedText,
+  docType,
+  toEmail,
+  r2: { bucket, key },
+  savedLocal: null,
+  deletedLocal: true,
+});
+      
 
       return res.json(result);
     } catch (e: any) {
