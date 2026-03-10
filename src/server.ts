@@ -2621,8 +2621,23 @@ if (!resolvedCustomerId && toEmail) {
   const billingStatus = safeStr(match?.status || "");
   const gate = isProcessingAllowed(billingStatus);
   const blocked = !!customerId && gate.allowed === false;
-  const blockedReason = blocked ? gate.reason || "billing_block" : null;
+   const blockedReason = blocked ? gate.reason || "billing_block" : null; 
+  if (blocked) {
+    console.log("⛔ PROCESSING_BLOCKED:", {
+      customerId,
+      billingStatus,
+      blockedReason,
+      requestId: args.requestId,
+    });
 
+    return {
+      ok: false,
+      skipped: true,
+      reason: blockedReason,
+      customerId,
+      resolvedCustomerId,
+    } as any;
+  }
   const customerRubric = customerId ? await getCustomerRubric(customerId) : null;
   let matchedJobRubric: any = null;
   let matchedJobId = "";
