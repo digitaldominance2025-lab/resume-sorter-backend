@@ -2311,22 +2311,48 @@ async function ensureSheetTabExists(spreadsheetId: string, title: string) {
 
 async function ensureResumesTab(spreadsheetId: string) {
   const TAB = "Resumes";
-const sheetId = await getSheetIdByTitle(spreadsheetId, TAB);
-if (sheetId != null) {
-  const sheets = google.sheets({ version: "v4", auth: oauth2Client });
 
-  await applyResumesSheetLayout({
-    sheets,
-    spreadsheetId,
-    sheetId,
-  });
-}
   // Enforce single-tab layout first
   await ensureSingleTabResumes(spreadsheetId);
 
-  // If already has any content, leave it alone
+  const sheets = google.sheets({ version: "v4", auth: oauth2Client });
+
+  const sheetId = await getSheetIdByTitle(spreadsheetId, TAB);
+  if (sheetId != null) {
+    await applyResumesSheetLayout({
+      sheets,
+      spreadsheetId,
+      sheetId,
+    });
+  }
+
   const values = await readResumesTabValues(spreadsheetId);
   const hasAnyContent = values.some((r) => r.some((c) => safeStr(c)));
+
+  // Repair header rows for any existing JOB sections
+  for (let i = 0; i < values.length; i++) {
+    const row = values[i] || [];
+    if (isJobHeaderRow(row)) {
+      const headerRowNumber = i + 2; // next row after JOB:
+      await sheets.spreadsheets.values.update({
+        spreadsheetId,
+        range: `Resumes!A${headerRowNumber}:H${headerRowNumber}`,
+        valueInputOption: "RAW",
+        requestBody: {
+          values: [[
+            "Date Received",
+            "Score",
+            "Decision",
+            "Summary",
+            "Link",
+            "Supporting Documents",
+            "Called",
+            "Notes",
+          ]],
+        },
+      });
+    }
+  }
 
   if (hasAnyContent) {
     devLog("✅ RESUMES_TAB_INITIALIZED_SINGLE_TAB:", spreadsheetId);
@@ -2339,6 +2365,8 @@ if (sheetId != null) {
 
   devLog("✅ RESUMES_TAB_INITIALIZED:", spreadsheetId);
 }
+  
+  
 
 // line below (keep whatever you already have below)
   
@@ -2396,6 +2424,7 @@ async function appendResumeRow(
     requestId: string;
   }
 ) {
+
   // Old helper appended directly to Resumes tab.
   // New behavior: enforce single tab + append under "Unsorted" job section
   // (your routing code should call appendResumeUnderJobSection for matched jobs;
