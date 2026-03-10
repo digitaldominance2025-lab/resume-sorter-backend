@@ -2424,29 +2424,28 @@ async function appendResumeRow(
     requestId: string;
   }
 ) {
-
-  // Old helper appended directly to Resumes tab.
-  // New behavior: enforce single tab + append under "Unsorted" job section
-  // (your routing code should call appendResumeUnderJobSection for matched jobs;
-  // this preserves any legacy call sites that still call appendResumeRow).
   await ensureSingleTabResumes(spreadsheetId);
   await ensureJobSectionExists(spreadsheetId, "Unsorted");
 
-  // TEMP: disabling duplicate sheet write
-// await appendResumeUnderJobSection({
-//   spreadsheetId,
-//   jobTitle: "Unsorted",
-//   row: {
-//     receivedAt: row.receivedAt,
-//     source: row.source,
-//     filename: row.filename,
-//     score: row.score ?? null,
-//     summary: safeStr(row.summary || "").slice(0, 5000),
-//     r2Key: row.r2Key || "",
-//     resumeLink: row.resumeLink || "",
-//     requestId: row.requestId || "",
-//   },
-// });
+  await appendResumeUnderJobSection({
+    spreadsheetId,
+    jobTitle: "Unsorted",
+    row: {
+      receivedAt: row.receivedAt,
+      source: row.source,
+      filename: row.filename,
+      score: row.score ?? null,
+      decision:
+        Number(row.score) >= 61 ? "CALL" : Number(row.score) >= 41 ? "MAYBE" : "NO",
+      summary: safeStr(row.summary || "").slice(0, 5000),
+      r2Key: row.r2Key || "",
+      resumeLink: row.resumeLink || "",
+      supportingDocuments: "",
+      called: "NO",
+      notes: "",
+      requestId: row.requestId || "",
+    },
+  });
 
   devLog("📝 RESUME_SECTION_APPENDED:", spreadsheetId, row.requestId);
 }
