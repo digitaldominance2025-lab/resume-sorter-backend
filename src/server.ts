@@ -1983,25 +1983,33 @@ async function appendJobSectionAtBottom(spreadsheetId: string, jobTitle: string)
   const sheets = google.sheets({ version: "v4", auth: oauth2Client });
   const TAB = "Resumes";
 
-  // If sheet already has content, add a blank spacer row before a new section
   const existing = await readResumesTabValues(spreadsheetId);
-  const hasAny = existing.some((r) => r.some((c) => safeStr(c)));
 
-  const sectionRows: any[] = [];
+  // Find the last row that actually has cell VALUES (ignore formatting / checkboxes)
+  let lastUsedRow1 = 0; // 1-based
+  for (let i = 0; i < existing.length; i++) {
+    const row = existing[i] || [];
+    if (row.some((c) => safeStr(c))) {
+      lastUsedRow1 = i + 1;
+    }
+  }
 
-  if (hasAny) sectionRows.push(["", "", "", "", "", "", "", ""]); // spacer (8 cols)
+  const startRow1 = lastUsedRow1 > 0 ? lastUsedRow1 + 2 : 1; // blank spacer if needed
+  const headerRow1 = startRow1;
+  const columnsRow1 = startRow1 + 1;
 
-sectionRows.push([jobHeaderCell(jobTitle), "", "", "", "", "", "", ""]); // job header row (8 cols)
-sectionRows.push([...RESUME_COL_HEADERS]); // column headers row (8 cols)
-  await sheets.spreadsheets.values.append({
+  await sheets.spreadsheets.values.update({
     spreadsheetId,
-    range: `${TAB}!A:H`,
+    range: `${TAB}!A${headerRow1}:H${columnsRow1}`,
     valueInputOption: "RAW",
-    insertDataOption: "INSERT_ROWS",
-    requestBody: { values: sectionRows },
+    requestBody: {
+      values: [
+        [jobHeaderCell(jobTitle), "", "", "", "", "", "", ""],
+        [...RESUME_COL_HEADERS],
+      ],
+    },
   });
 
-  // Re-read AFTER append so row indexes are real
   const updatedValues = await readResumesTabValues(spreadsheetId);
   const start0 = findJobSectionStart(updatedValues, jobTitle);
 
@@ -2013,7 +2021,6 @@ sectionRows.push([...RESUME_COL_HEADERS]); // column headers row (8 cols)
         spreadsheetId,
         requestBody: {
           requests: [
-            // Format the column header row (dark gray background, white bold text)
             {
               repeatCell: {
                 range: {
@@ -2044,8 +2051,6 @@ sectionRows.push([...RESUME_COL_HEADERS]); // column headers row (8 cols)
                 fields: "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
               },
             },
-
-            // Color the JOB header row red with white bold text
             {
               repeatCell: {
                 range: {
