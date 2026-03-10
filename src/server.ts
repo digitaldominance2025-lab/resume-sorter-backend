@@ -1974,9 +1974,22 @@ function findJobSectionEnd(values: string[][], start0: number): number {
   }
   return values.length; // end of sheet
 }
+function rowHasMeaningfulContent(row: string[]) {
+  return row.some((c, idx) => {
+    const v = safeStr(c).trim();
 
+    // Ignore empty cells
+    if (!v) return false;
+
+    // Ignore unchecked checkbox artifact in column G ("Called")
+    // Google Sheets can return FALSE for checkbox cells even when the row is otherwise empty.
+    if (idx === 6 && v.toUpperCase() === "FALSE") return false;
+
+    return true;
+  });
+}
 function isBlankRow(row: string[]) {
-  return row.every((c) => !safeStr(c));
+  return !rowHasMeaningfulContent(row);
 }
 
 async function appendJobSectionAtBottom(spreadsheetId: string, jobTitle: string) {
@@ -1986,14 +1999,25 @@ async function appendJobSectionAtBottom(spreadsheetId: string, jobTitle: string)
   const existing = await readResumesTabValues(spreadsheetId);
 
   // Find the last row that actually has cell VALUES (ignore formatting / checkboxes)
-  let lastUsedRow1 = 0; // 1-based
-  for (let i = 0; i < existing.length; i++) {
-    const row = existing[i] || [];
-    if (row.some((c) => safeStr(c))) {
-      lastUsedRow1 = i + 1;
-    }
-  }
+  let lastUsedRow1 = 0;
+for (let i = 0; i < existing.length; i++) {
+  const row = existing[i] || [];
 
+  const meaningful = row.some((c, idx) => {
+    const v = safeStr(c).trim();
+
+    if (!v) return false;
+
+    // Ignore unchecked checkbox column (column G)
+    if (idx === 6 && v.toUpperCase() === "FALSE") return false;
+
+    return true;
+  });
+
+  if (meaningful) {
+    lastUsedRow1 = i + 1;
+  }
+}
   const startRow1 = lastUsedRow1 > 0 ? lastUsedRow1 + 2 : 1; // blank spacer if needed
   const headerRow1 = startRow1;
   const columnsRow1 = startRow1 + 1;
@@ -2317,7 +2341,6 @@ async function ensureSheetTabExists(spreadsheetId: string, title: string) {
 async function ensureResumesTab(spreadsheetId: string) {
   const TAB = "Resumes";
 
-  // Enforce single-tab layout first
   await ensureSingleTabResumes(spreadsheetId);
 
   const sheets = google.sheets({ version: "v4", auth: oauth2Client });
@@ -2332,23 +2355,39 @@ async function ensureResumesTab(spreadsheetId: string) {
   }
 
   let values = await readResumesTabValues(spreadsheetId);
-
-  // IMPORTANT:
-  // Do not treat checkbox/layout artifacts as "real content".
-  // What matters is whether actual JOB sections exist.
   const hasAnyJobSections = values.some((row) => isJobHeaderRow(row));
 
+  // HARD REPAIR:
+  // If no visible JOB sections exist, force-write them into the top rows.
   if (!hasAnyJobSections) {
-    await appendJobSectionAtBottom(spreadsheetId, "Unsorted");
-    await appendJobSectionAtBottom(spreadsheetId, "General Submissions");
+    console.log("🧪 RESUMES_TAB_HARD_REPAIR_START", { spreadsheetId });   
+    await sheets.spreadsheets.values.update({
+      spreadsheetId,
+      range: `${TAB}!A1:H5`,
+      valueInputOption: "RAW",
+      requestBody: {
+        values: [
+          [jobHeaderCell("Unsorted"), "", "", "", "", "", "", ""],
+          [...RESUME_COL_HEADERS],
+          ["", "", "", "", "", "", "", ""],
+          [jobHeaderCell("General Submissions"), "", "", "", "", "", "", ""],
+          [...RESUME_COL_HEADERS],
+        ],
+      },
+    });
+
     values = await readResumesTabValues(spreadsheetId);
+     console.log("🧪 RESUMES_TAB_HARD_REPAIR_AFTER_READ", {
+  spreadsheetId,
+  topRows: values.slice(0, 8),
+}); 
   }
 
   // Repair header rows for every JOB section
   for (let i = 0; i < values.length; i++) {
     const row = values[i] || [];
     if (isJobHeaderRow(row)) {
-      const headerRowNumber = i + 2; // next row after JOB:
+      const headerRowNumber = i + 2;
       await sheets.spreadsheets.values.update({
         spreadsheetId,
         range: `Resumes!A${headerRowNumber}:H${headerRowNumber}`,
@@ -2359,7 +2398,7 @@ async function ensureResumesTab(spreadsheetId: string) {
             "Score",
             "Decision",
             "Summary",
-            "Resume Link",
+            "Link",
             "Supporting Documents",
             "Called",
             "Notes",
@@ -2369,9 +2408,84 @@ async function ensureResumesTab(spreadsheetId: string) {
     }
   }
 
+  // Repaint the two baseline section rows so they are visibly obvious
+  const refreshed = await readResumesTabValues(spreadsheetId);
+  if (sheetId != null) {
+    for (let i = 0; i < refreshed.length; i++) {
+      const row = refreshed[i] || [];
+      if (isJobHeaderRow(row)) {
+        await sheets.spreadsheets.batchUpdate({
+          spreadsheetId,
+          requestBody: {
+            requests: [
+              {
+                repeatCell: {
+                  range: {
+                    sheetId,
+                    startRowIndex: i,
+                    endRowIndex: i + 1,
+                    startColumnIndex: 0,
+                    endColumnIndex: 8,
+                  },
+                  cell: {
+                    userEnteredFormat: {
+                      backgroundColor: {
+                        red: 0.75,
+                        green: 0.10,
+                        blue: 0.10,
+                      },
+                      textFormat: {
+                        bold: true,
+                        foregroundColor: {
+                          red: 1,
+                          green: 1,
+                          blue: 1,
+                        },
+                      },
+                    },
+                  },
+                  fields: "userEnteredFormat(backgroundColor,textFormat)",
+                },
+              },
+              {
+                repeatCell: {
+                  range: {
+                    sheetId,
+                    startRowIndex: i + 1,
+                    endRowIndex: i + 2,
+                    startColumnIndex: 0,
+                    endColumnIndex: 8,
+                  },
+                  cell: {
+                    userEnteredFormat: {
+                      backgroundColor: {
+                        red: 0.2,
+                        green: 0.2,
+                        blue: 0.2,
+                      },
+                      textFormat: {
+                        bold: true,
+                        foregroundColor: {
+                          red: 1,
+                          green: 1,
+                          blue: 1,
+                        },
+                      },
+                      horizontalAlignment: "CENTER",
+                    },
+                  },
+                  fields: "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
+                },
+              },
+            ],
+          },
+        });
+      }
+    }
+  }
+
   devLog("✅ RESUMES_TAB_INITIALIZED_SINGLE_TAB:", spreadsheetId);
 }
-
 // line below (keep whatever you already have below)
   
 // ============================
