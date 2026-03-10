@@ -1985,18 +1985,24 @@ function findJobSectionStart(values: string[][], jobTitle: string): number {
 }
 
 function findJobSectionEnd(values: string[][], start0: number): number {
+  // End at the next JOB header if one exists
   for (let i = start0 + 1; i < values.length; i++) {
     if (isJobHeaderRow(values[i] || [])) return i;
   }
 
-  for (let i = values.length - 1; i >= start0; i--) {
+  // Last section: stop at the first blank spacer row
+  // after:
+  // start0     = JOB header
+  // start0 + 1 = column headers
+  for (let i = start0 + 2; i < values.length; i++) {
     const row = values[i] || [];
-    if (rowHasMeaningfulContent(row)) {
-      return i + 1;
+    if (isBlankRow(row)) {
+      return i;
     }
   }
 
-  return start0 + 2;
+  // If no blank spacer row exists, stop at loaded values end
+  return values.length;
 }
 
 function rowHasMeaningfulContent(row: string[]) {
