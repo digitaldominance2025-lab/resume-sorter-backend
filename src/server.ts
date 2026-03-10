@@ -4488,8 +4488,9 @@ if (criteria && typeof criteria === "object") {
       throw new Error("Missing tallySheetId from createTallySheetForCustomer");
     }
    // Share the sheet with the customer so they can open it immediately
-     if (adminEmail) {
-    await ensureSheetSharedOnce(tallySheetId, adminEmail);
+     // Share the sheet with the customer so they can open it immediately
+if (workEmail) {
+  await ensureSheetSharedOnce(tallySheetId, workEmail);
 }
     // 🔒 Enforce single-sheet job layout (no extra tabs, jobs down left)
     await ensureResumesTab(tallySheetId);
