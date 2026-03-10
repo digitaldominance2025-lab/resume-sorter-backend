@@ -4886,7 +4886,7 @@ try {
       `.trim();
 
       // ✅ Use the helper you already use for customer emails
-      await sendCustomerText(to, subject, html);
+      await sendCustomerHtml(to, subject, html);
       devLog("📨 NIGHTLY_SHEET_LINK_SENT:", c.customerId, "->", to);
     } catch (e: any) {
       devLog("⚠️ NIGHTLY_CUSTOMER_FAILED:", c.customerId, e?.message || e);
