@@ -871,13 +871,10 @@ async function sendAdmin(subject: string, body: string) {
 async function sendCustomerText(to: string, subject: string, text: string) {
   const svc: any = emailSvc as any;
   const candidates = [
-    svc.sendTextEmail,
-    svc.sendEmailText,
-    svc.sendEmail,
-    svc.sendCustomerEmail,
-    svc.sendCustomerTextEmail,
-  ].filter((fn: any) => typeof fn === "function");
-
+  svc.sendHtmlEmail,
+  svc.sendEmailHtml,
+  svc.sendCustomerHtmlEmail,
+].filter((fn: any) => typeof fn === "function");
   if (!candidates.length) {
     console.log("ℹ️ No customer email function found in emailSvc; skipping.", { to, subject });
     return;
