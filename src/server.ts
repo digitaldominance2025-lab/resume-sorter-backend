@@ -2326,10 +2326,20 @@ async function ensureResumesTab(spreadsheetId: string) {
     });
   }
 
-  const values = await readResumesTabValues(spreadsheetId);
-  const hasAnyContent = values.some((r) => r.some((c) => safeStr(c)));
+  let values = await readResumesTabValues(spreadsheetId);
 
-  // Repair header rows for any existing JOB sections
+  // IMPORTANT:
+  // Do not treat checkbox/layout artifacts as "real content".
+  // What matters is whether actual JOB sections exist.
+  const hasAnyJobSections = values.some((row) => isJobHeaderRow(row));
+
+  if (!hasAnyJobSections) {
+    await appendJobSectionAtBottom(spreadsheetId, "Unsorted");
+    await appendJobSectionAtBottom(spreadsheetId, "General Submissions");
+    values = await readResumesTabValues(spreadsheetId);
+  }
+
+  // Repair header rows for every JOB section
   for (let i = 0; i < values.length; i++) {
     const row = values[i] || [];
     if (isJobHeaderRow(row)) {
@@ -2344,7 +2354,7 @@ async function ensureResumesTab(spreadsheetId: string) {
             "Score",
             "Decision",
             "Summary",
-            "Link",
+            "Resume Link",
             "Supporting Documents",
             "Called",
             "Notes",
@@ -2354,19 +2364,8 @@ async function ensureResumesTab(spreadsheetId: string) {
     }
   }
 
-  if (hasAnyContent) {
-    devLog("✅ RESUMES_TAB_INITIALIZED_SINGLE_TAB:", spreadsheetId);
-    return;
-  }
-
-  // Create baseline sections directly (no recursion through ensureJobSectionExists)
-  await appendJobSectionAtBottom(spreadsheetId, "Unsorted");
-  await appendJobSectionAtBottom(spreadsheetId, "General Submissions");
-
-  devLog("✅ RESUMES_TAB_INITIALIZED:", spreadsheetId);
+  devLog("✅ RESUMES_TAB_INITIALIZED_SINGLE_TAB:", spreadsheetId);
 }
-  
-  
 
 // line below (keep whatever you already have below)
   
