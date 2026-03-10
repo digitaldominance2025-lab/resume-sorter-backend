@@ -1364,7 +1364,7 @@ async function ensureTodayTallyRow(
 
 const existingRes = await sheets.spreadsheets.values.get({
   spreadsheetId: tallySheetId,
-  range: `${TALLY_TAB}!A2:H1000`,
+  range: `${TALLY_TAB}!J2:Q1000`,
 });
 
 const rows = existingRes.data.values || [];
@@ -1378,7 +1378,7 @@ if (rowIndex0 !== -1) {
 
 await sheets.spreadsheets.values.append({
   spreadsheetId: tallySheetId,
-  range: `${TALLY_TAB}!A:H`,
+  range: `${TALLY_TAB}!J:Q`,
   valueInputOption: "RAW",
   requestBody: { values: [[today, 0, "", customerId, "", "", "", ""]] },
 });
