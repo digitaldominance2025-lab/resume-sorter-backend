@@ -2008,36 +2008,43 @@ function rowHasMeaningfulContent(row: string[]) {
 function isBlankRow(row: string[]) {
   return !rowHasMeaningfulContent(row);
 }
-
 async function appendJobSectionAtBottom(spreadsheetId: string, jobTitle: string) {
   const sheets = google.sheets({ version: "v4", auth: oauth2Client });
   const TAB = "Resumes";
 
   const existing = await readResumesTabValues(spreadsheetId);
 
-  // Find the last row that actually has cell VALUES (ignore formatting / checkboxes)
-  let lastUsedRow1 = 0;
-for (let i = 0; i < existing.length; i++) {
-  const row = existing[i] || [];
+  // If section already exists, do nothing
+  const alreadyAt = findJobSectionStart(existing, jobTitle);
+  if (alreadyAt !== -1) return;
 
-  const meaningful = row.some((c, idx) => {
-    const v = safeStr(c).trim();
-
-    if (!v) return false;
-
-    // Ignore unchecked checkbox column (column G)
-    if (idx === 6 && v.toUpperCase() === "FALSE") return false;
-
-    return true;
-  });
-
-  if (meaningful) {
-    lastUsedRow1 = i + 1;
+  // Find the last REAL job section near the top of the sheet and append after it.
+  // Do NOT trust random artifact rows farther down.
+  let lastSectionStart0 = -1;
+  for (let i = 0; i < existing.length; i++) {
+    if (isJobHeaderRow(existing[i] || [])) {
+      lastSectionStart0 = i;
+    }
   }
-}
-  const startRow1 = lastUsedRow1 > 0 ? lastUsedRow1 + 2 : 1; // blank spacer if needed
+
+  let startRow1 = 1;
+
+  if (lastSectionStart0 !== -1) {
+    const afterLastSection0 = findJobSectionEnd(existing, lastSectionStart0);
+    startRow1 = afterLastSection0 + 2; // 1 blank spacer row, then new JOB row
+  }
+
   const headerRow1 = startRow1;
   const columnsRow1 = startRow1 + 1;
+
+  console.log("🧪 JOB_SECTION_APPEND_DEBUG", {
+    spreadsheetId,
+    jobTitle,
+    lastSectionStart0,
+    startRow1,
+    headerRow1,
+    columnsRow1,
+  });
 
   await sheets.spreadsheets.values.update({
     spreadsheetId,
