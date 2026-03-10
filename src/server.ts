@@ -2835,7 +2835,13 @@ if (!resolvedCustomerId && toEmail) {
   const textPreview = String(extractedText || "").slice(0, 400);
   const candidateEmail = extractCandidateEmail(extractedText || "");
   const supportingDocumentsCell = Array.isArray(args.supportingDocuments)
-  ? args.supportingDocuments.map((x) => safeStr(x)).filter(Boolean).join(", ")
+  ? args.supportingDocuments
+      .map((name: string) => {
+        const label = safeStr(name).replace(/"/g, '""');
+        const link = `${API_BASE_URL}/r/${args.requestId}`;
+        return `=HYPERLINK("${link}","${label}")`;
+      })
+      .join(", ")
   : "";
   
   const aiScoreNum = Number(ai?.score);
@@ -3648,22 +3654,33 @@ app.post(
           }
 
           const extractedText = await extractTextFromBuffer(safeName, buf);
-          const docType: "RESUME" | "NON_RESUME" =
-            extractedText.trim().length > 0 ? classifyDocTypeFromText(extractedText) : "NON_RESUME";
+const docType: "RESUME" | "NON_RESUME" =
+  extractedText.trim().length > 0 ? classifyDocTypeFromText(extractedText) : "NON_RESUME";
 
-          const result = await processInboundDoc({
-  requestId: getRequestId(req),
-  source: "resend",
-  filename: safeName,
-  buffer: buf,
-  extractedText,
-  docType,
-  toEmail,
-  supportingDocuments: attachmentNames.filter((n: string) => n !== safeName),
-  r2,
-  savedLocal: null,
-  deletedLocal: true,
-});
+if (docType !== "RESUME") {
+  processed.push({
+    ok: true,
+    filename: safeName,
+    r2Key: r2.key,
+    docType,
+    supportingOnly: true,
+  });
+  continue;
+}
+
+     const result = await processInboundDoc({
+        requestId: getRequestId(req),
+        source: "resend",
+        filename: safeName,
+        buffer: buf,
+        extractedText,
+        docType,
+        toEmail,
+        supportingDocuments: attachmentNames.filter((n: string) => n !== safeName),
+        r2,
+        savedLocal: null,
+        deletedLocal: true,
+       });
 
           processed.push({ ok: true, filename: safeName, r2Key: r2.key, docType, result });
         }
