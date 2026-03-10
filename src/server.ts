@@ -1709,6 +1709,95 @@ async function applyResumesSheetLayout(args: {
           },
         },
         {
+          setDataValidation: {
+            range: {
+              sheetId: args.sheetId,
+              startRowIndex: 2,
+              startColumnIndex: 6, // G = Called
+              endColumnIndex: 7,
+            },
+            rule: {
+              condition: {
+                type: "BOOLEAN",
+              },
+              showCustomUi: true,
+              strict: false,
+            },
+          },
+        },
+        {
+          addConditionalFormatRule: {
+            rule: {
+              ranges: [
+                {
+                  sheetId: args.sheetId,
+                  startRowIndex: 2,
+                  startColumnIndex: 0,
+                  endColumnIndex: 8,
+                },
+              ],
+              booleanRule: {
+                condition: {
+                  type: "CUSTOM_FORMULA",
+                  values: [{ userEnteredValue: '=AND(ISNUMBER($B3),$B3>=61)' }],
+                },
+                format: {
+                  backgroundColor: { red: 0.88, green: 0.96, blue: 0.88 },
+                },
+              },
+            },
+            index: 0,
+          },
+        },
+        {
+          addConditionalFormatRule: {
+            rule: {
+              ranges: [
+                {
+                  sheetId: args.sheetId,
+                  startRowIndex: 2,
+                  startColumnIndex: 0,
+                  endColumnIndex: 8,
+                },
+              ],
+              booleanRule: {
+                condition: {
+                  type: "CUSTOM_FORMULA",
+                  values: [{ userEnteredValue: '=AND(ISNUMBER($B3),$B3>=41,$B3<=60)' }],
+                },
+                format: {
+                  backgroundColor: { red: 1, green: 0.97, blue: 0.8 },
+                },
+              },
+            },
+            index: 0,
+          },
+        },
+        {
+          addConditionalFormatRule: {
+            rule: {
+              ranges: [
+                {
+                  sheetId: args.sheetId,
+                  startRowIndex: 2,
+                  startColumnIndex: 0,
+                  endColumnIndex: 8,
+                },
+              ],
+              booleanRule: {
+                condition: {
+                  type: "CUSTOM_FORMULA",
+                  values: [{ userEnteredValue: '=AND(ISNUMBER($B3),$B3<=40)' }],
+                },
+                format: {
+                  backgroundColor: { red: 1, green: 0.9, blue: 0.9 },
+                },
+              },
+            },
+            index: 0,
+          },
+        },
+        {
           updateDimensionProperties: {
             range: {
               sheetId: args.sheetId,
@@ -1760,7 +1849,7 @@ async function colorDecisionCell(args: {
               sheetId: args.sheetId,
               startRowIndex: args.rowIndex0,
               endRowIndex: args.rowIndex0 + 1,
-              startColumnIndex: 2, // column E = decision
+              startColumnIndex: 2, // column C = decision
               endColumnIndex: 3,
             },
             cell: {
@@ -2069,7 +2158,7 @@ if (sheetId == null) {
         args.row.summary || "",
         args.row.resumeLink || "",
         args.row.supportingDocuments || "",
-        safeStr(args.row.called || "NO").toUpperCase(),
+        safeStr(args.row.called).toUpperCase() === "YES",
         args.row.notes || "",
       ]],
     },
@@ -2107,7 +2196,7 @@ const rowValues = [[
   args.row.summary || "",
   args.row.resumeLink || "",
   args.row.supportingDocuments || "",
-  safeStr(args.row.called || "NO").toUpperCase(),
+  safeStr(args.row.called).toUpperCase() === "YES",
   args.row.notes || "",
 ]];
 
