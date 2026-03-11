@@ -2087,7 +2087,51 @@ async function appendJobSectionAtBottom(spreadsheetId: string, jobTitle: string)
   let startRow1 = 1;
 
   if (sectionStarts.length === 0) {
-    startRow1 = 1;
+    // Brand-new sheet: add a bold title at the top and start first section below it
+    await sheets.spreadsheets.values.update({
+      spreadsheetId,
+      range: `${TAB}!A1:H2`,
+      valueInputOption: "RAW",
+      requestBody: {
+        values: [
+          ["EasyPaper Hiring Inbox", "", "", "", "", "", "", ""],
+          ["", "", "", "", "", "", "", ""],
+        ],
+      },
+    });
+
+    const titleSheetId = await getSheetIdByTitle(spreadsheetId, TAB);
+    if (titleSheetId !== null) {
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId,
+        requestBody: {
+          requests: [
+            {
+              repeatCell: {
+                range: {
+                  sheetId: titleSheetId,
+                  startRowIndex: 0,
+                  endRowIndex: 1,
+                  startColumnIndex: 0,
+                  endColumnIndex: 8,
+                },
+                cell: {
+                  userEnteredFormat: {
+                    textFormat: {
+                      bold: true,
+                      fontSize: 16,
+                    },
+                  },
+                },
+                fields: "userEnteredFormat.textFormat",
+              },
+            },
+          ],
+        },
+      });
+    }
+
+    startRow1 = 3;
   } else {
     const lastSectionStart0 = sectionStarts[sectionStarts.length - 1];
     const lastSectionEnd0 = findJobSectionEnd(existing, lastSectionStart0);
