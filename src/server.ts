@@ -792,6 +792,7 @@ $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19::jsonb
         safeStr(args.billingStatus) || null,
         safeStr(args.blockedReason) || null,
         safeStr(args.filename) || null,
+        safeStr((args as any).fileHash) || null,
         safeStr(args.r2Bucket) || null,
         safeStr(args.r2Key) || null,
         safeStr(args.docType) || null,
@@ -875,38 +876,71 @@ async function sendAdmin(subject: string, body: string) {
   }
   console.log("ℹ️ emailSvc.sendAdminEmail not found; skipping email.");
 }
-
 async function sendCustomerText(to: string, subject: string, text: string) {
   const svc: any = emailSvc as any;
-  const candidates = [
-  svc.sendHtmlEmail,
-  svc.sendEmailHtml,
-  svc.sendCustomerHtmlEmail,
-].filter((fn: any) => typeof fn === "function");
-  if (!candidates.length) {
+
+  const textCandidates = [
+    svc.sendTextEmail,
+    svc.sendCustomerTextEmail,
+    svc.sendEmailText,
+    svc.sendCustomerEmail,
+    svc.sendEmail,
+  ].filter((fn: any) => typeof fn === "function");
+
+  const htmlCandidates = [
+    svc.sendHtmlEmail,
+    svc.sendEmailHtml,
+    svc.sendCustomerHtmlEmail,
+  ].filter((fn: any) => typeof fn === "function");
+
+  if (!textCandidates.length && !htmlCandidates.length) {
     console.log("ℹ️ No customer email function found in emailSvc; skipping.", { to, subject });
     return;
   }
 
-  const fn = candidates[0];
+  const htmlFallback = `<div style="white-space:pre-wrap;font-family:Arial,sans-serif;">${String(
+    text || ""
+  )
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")}</div>`;
 
   try {
-    if (fn.length === 1) {
+    if (textCandidates.length) {
+      const fn = textCandidates[0];
+
+      if (fn.length === 1) {
+        await fn({ to, subject, text });
+        return;
+      }
+      if (fn.length >= 3) {
+        await fn(to, subject, text);
+        return;
+      }
       await fn({ to, subject, text });
       return;
     }
-    if (fn.length >= 3) {
-      await fn(to, subject, text);
+
+    const fn = htmlCandidates[0];
+
+    if (fn.length === 1) {
+      await fn({ to, subject, html: htmlFallback, text });
       return;
     }
-    await fn({ to, subject, text });
+    if (fn.length >= 3) {
+      await fn(to, subject, htmlFallback);
+      return;
+    }
+    await fn({ to, subject, html: htmlFallback, text });
   } catch (e: any) {
     console.log("⚠️ sendCustomerText failed (continuing):", e?.message || e);
   }
 }
+
 async function sendCustomerHtml(to: string, subject: string, html: string) {
   const svc: any = emailSvc as any;
-  const candidates = [
+
+  const htmlCandidates = [
     svc.sendHtmlEmail,
     svc.sendEmailHtml,
     svc.sendCustomerHtmlEmail,
@@ -914,27 +948,34 @@ async function sendCustomerHtml(to: string, subject: string, html: string) {
     svc.sendEmail,
   ].filter((fn: any) => typeof fn === "function");
 
-  if (!candidates.length) {
+  if (!htmlCandidates.length) {
     console.log("ℹ️ No customer HTML email function found in emailSvc; skipping.", { to, subject });
     return;
   }
 
-  const fn = candidates[0];
+  const textFallback = String(html || "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n\n")
+    .replace(/<[^>]+>/g, "")
+    .trim();
 
   try {
+    const fn = htmlCandidates[0];
+
     if (fn.length === 1) {
-      await fn({ to, subject, html });
+      await fn({ to, subject, html, text: textFallback });
       return;
     }
     if (fn.length >= 3) {
       await fn(to, subject, html);
       return;
     }
-    await fn({ to, subject, html });
+    await fn({ to, subject, html, text: textFallback });
   } catch (e: any) {
     console.log("⚠️ sendCustomerHtml failed (continuing):", e?.message || e);
   }
 }
+
 // ============================
 // Customer utilities
 // ============================
@@ -4531,7 +4572,7 @@ if (criteria && typeof criteria === "object") {
   throw new Error("Missing tallySheetId from createTallySheetForCustomer");
 }
 
-const customerEmail = safeStr(payload?.email);
+const customerEmail = safeStr(adminEmail) || safeStr(payload?.adminEmail) || safeStr(payload?.email);
 
 if (customerEmail) {
   await ensureSheetSharedOnce(tallySheetId, customerEmail);
