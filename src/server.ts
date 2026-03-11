@@ -2301,7 +2301,21 @@ if (start0 === -1) {
     insertAt0 = i + 1;
   }
    const sheetId = await getSheetIdByTitle(args.spreadsheetId, TAB);
+   let supportingDocsValue = args.row.supportingDocuments || "";
 
+{
+  const normalizeDocLabel = (s: string) =>
+    safeStr(s)
+      .toLowerCase()
+      .replace(/\.[a-z0-9]+$/i, "")
+      .replace(/[^a-z0-9]/g, "");
+
+  const mainResumeLabel = normalizeDocLabel(args.row.filename || args.row.resumeLink || "");
+
+  if (normalizeDocLabel(supportingDocsValue) === mainResumeLabel) {
+    supportingDocsValue = "";
+  }
+}
 // If we can't resolve sheetId, fall back to values.append at bottom (safe)
 if (sheetId == null) {
   await sheets.spreadsheets.values.append({
@@ -2316,7 +2330,7 @@ if (sheetId == null) {
         args.row.decision ?? "",
         args.row.summary || "",
         args.row.resumeLink || "",
-        args.row.supportingDocuments || "",
+        supportingDocsValue,
         safeStr(args.row.called).toUpperCase() === "YES" ? "YES" : "",
         args.row.notes || "",
       ]],
@@ -2346,15 +2360,14 @@ await sheets.spreadsheets.batchUpdate({
 });
 
 // Write the resume row into that inserted row
-const rowNumber = insertAt0 + 1; // 1-based for A1 notation
-
-const rowValues = [[
+const rowNumber = insertAt0 + 1; // 1-based for A1 notation   
+  const rowValues = [[
   new Date(args.row.receivedAt).toLocaleString("en-CA", { hour12: false }),
   args.row.score ?? "",
   args.row.decision ?? "",
   args.row.summary || "",
   args.row.resumeLink || "",
-  args.row.supportingDocuments || "",
+  supportingDocsValue,
   safeStr(args.row.called).toUpperCase() === "YES" ? "YES" : "",
   args.row.notes || "",
 ]];
@@ -4754,7 +4767,10 @@ if (adminEmail && adminEmail.toLowerCase() !== customerEmail.toLowerCase()) {
                 Manage Jobs
               </a>
             </div>
-
+               <p style="margin:0 0 14px 0;color:#333;font-size:14px;line-height:1.5;">
+              <strong>This sheet is shared with:</strong> ${safeStr(adminEmail)}<br/>
+              Open it while signed into that Google account.
+            </p>
             <p style="margin:16px 0 0 0;color:#333;font-size:14px;line-height:1.5;">
               Use this email address in your hiring adds.  We'll score + sort them into your sheet automatically.
             </p>
