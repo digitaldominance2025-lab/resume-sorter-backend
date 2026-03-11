@@ -2311,13 +2311,13 @@ if (sheetId == null) {
     insertDataOption: "INSERT_ROWS",
     requestBody: {
       values: [[
-        args.row.receivedAt,
+        new Date(args.row.receivedAt).toLocaleString("en-CA", { hour12: false }),
         args.row.score ?? "",
         args.row.decision ?? "",
         args.row.summary || "",
         args.row.resumeLink || "",
         args.row.supportingDocuments || "",
-        safeStr(args.row.called).toUpperCase() === "YES",
+        safeStr(args.row.called).toUpperCase() === "YES" ? "YES" : "",
         args.row.notes || "",
       ]],
     },
@@ -2349,13 +2349,13 @@ await sheets.spreadsheets.batchUpdate({
 const rowNumber = insertAt0 + 1; // 1-based for A1 notation
 
 const rowValues = [[
-  args.row.receivedAt,
+  new Date(args.row.receivedAt).toLocaleString("en-CA", { hour12: false }),
   args.row.score ?? "",
   args.row.decision ?? "",
   args.row.summary || "",
   args.row.resumeLink || "",
   args.row.supportingDocuments || "",
-  safeStr(args.row.called).toUpperCase() === "YES",
+  safeStr(args.row.called).toUpperCase() === "YES" ? "YES" : "",
   args.row.notes || "",
 ]];
 
