@@ -4657,7 +4657,14 @@ if (criteria && typeof criteria === "object") {
 }
 
 const customerEmail = safeStr(adminEmail) || safeStr(payload?.adminEmail) || safeStr(payload?.email);
-
+console.log("SHEET_SHARE_DEBUG", {
+  signupId,
+  adminEmail,
+  payloadAdminEmail: payload?.adminEmail,
+  payloadEmail: payload?.email,
+  customerEmail,
+  tallySheetId,
+});
 if (customerEmail) {
   await ensureSheetSharedOnce(tallySheetId, customerEmail);
 }
