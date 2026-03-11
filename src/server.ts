@@ -5177,9 +5177,7 @@ async function runNightlyJob(): Promise<{ ok: true; date: string; report: string
 
   // Trial enforcement
   for (const c of customers) {
-        lines.push(
-      `TRIAL_DEBUG: ${c.customerId} | status=${c.status} | trialEndsAtISO=${c.trialEndsAtISO}`
-    ); 
+       
     console.log("🧪 TRIAL_CHECK_DEBUG:", {
       customerId: c.customerId,
       companyName: c.companyName,
