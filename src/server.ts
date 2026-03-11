@@ -2168,58 +2168,77 @@ async function appendJobSectionAtBottom(spreadsheetId: string, jobTitle: string)
   const start0 = findJobSectionStart(updatedValues, jobTitle);
   const sheetId = await getSheetIdByTitle(spreadsheetId, TAB);
 
-  if (start0 !== -1 && sheetId !== null) {
-    await sheets.spreadsheets.batchUpdate({
-      spreadsheetId,
-      requestBody: {
-        requests: [
-          {
-            repeatCell: {
-              range: {
-                sheetId,
-                startRowIndex: start0,
-                endRowIndex: start0 + 1,
-                startColumnIndex: 0,
-                endColumnIndex: 8,
+if (start0 !== -1 && sheetId !== null) {
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId,
+    requestBody: {
+      requests: [
+
+        // Freeze the top rows (title + spacer)
+        {
+          updateSheetProperties: {
+            properties: {
+              sheetId,
+              gridProperties: {
+                frozenRowCount: 2,
               },
-              cell: {
-                userEnteredFormat: {
-                  backgroundColor: { red: 0.75, green: 0.10, blue: 0.10 },
-                  textFormat: {
-                    bold: true,
-                    foregroundColor: { red: 1, green: 1, blue: 1 },
-                  },
+            },
+            fields: "gridProperties.frozenRowCount",
+          },
+        },
+
+        // JOB section header formatting
+        {
+          repeatCell: {
+            range: {
+              sheetId,
+              startRowIndex: start0,
+              endRowIndex: start0 + 1,
+              startColumnIndex: 0,
+              endColumnIndex: 8,
+            },
+            cell: {
+              userEnteredFormat: {
+                backgroundColor: { red: 0.75, green: 0.10, blue: 0.10 },
+                textFormat: {
+                  bold: true,
+                  foregroundColor: { red: 1, green: 1, blue: 1 },
                 },
               },
-              fields: "userEnteredFormat.backgroundColor,userEnteredFormat.textFormat",
             },
+            fields: "userEnteredFormat.backgroundColor,userEnteredFormat.textFormat",
           },
-          {
-            repeatCell: {
-              range: {
-                sheetId,
-                startRowIndex: start0 + 1,
-                endRowIndex: start0 + 2,
-                startColumnIndex: 0,
-                endColumnIndex: 8,
-              },
-              cell: {
-                userEnteredFormat: {
-                  backgroundColor: { red: 0.2, green: 0.2, blue: 0.2 },
-                  textFormat: {
-                    bold: true,
-                    foregroundColor: { red: 1, green: 1, blue: 1 },
-                  },
-                  horizontalAlignment: "CENTER",
+        },
+
+        // Column header formatting
+        {
+          repeatCell: {
+            range: {
+              sheetId,
+              startRowIndex: start0 + 1,
+              endRowIndex: start0 + 2,
+              startColumnIndex: 0,
+              endColumnIndex: 8,
+            },
+            cell: {
+              userEnteredFormat: {
+                backgroundColor: { red: 0.2, green: 0.2, blue: 0.2 },
+                textFormat: {
+                  bold: true,
+                  foregroundColor: { red: 1, green: 1, blue: 1 },
                 },
+                horizontalAlignment: "CENTER",
               },
-              fields: "userEnteredFormat.backgroundColor,userEnteredFormat.textFormat,userEnteredFormat.horizontalAlignment",
             },
+            fields:
+              "userEnteredFormat.backgroundColor,userEnteredFormat.textFormat,userEnteredFormat.horizontalAlignment",
           },
-        ],
-      },
-    });
-  }
+        },
+
+      ],
+    },
+  });
+}
 }
 async function ensureJobSectionExists(spreadsheetId: string, jobTitle: string): Promise<void> {
   await ensureResumesTab(spreadsheetId);
@@ -2470,7 +2489,7 @@ async function ensureResumesTab(spreadsheetId: string) {
 
   // HARD REPAIR:
   // If no visible JOB sections exist, force-write them into the top rows.
-  if (!hasAnyJobSections) {
+  if (!hasAnyJobSections && values.length === 0) {
     console.log("🧪 RESUMES_TAB_HARD_REPAIR_START", { spreadsheetId });   
     await sheets.spreadsheets.values.update({
       spreadsheetId,
