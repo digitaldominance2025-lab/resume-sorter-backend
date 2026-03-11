@@ -2443,16 +2443,6 @@ await applyResumesSheetLayout({
   spreadsheetId: args.spreadsheetId,
   sheetId,
 });
-
-// Wait briefly so Google Sheets finishes recalculating the grid
-await new Promise(resolve => setTimeout(resolve, 200));
-
-// Apply layout again to force column widths
-await applyResumesSheetLayout({
-  sheets,
-  spreadsheetId: args.spreadsheetId,
-  sheetId,
-});
 }
 
 async function ensureSheetTabExists(spreadsheetId: string, title: string) {
