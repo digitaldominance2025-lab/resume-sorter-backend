@@ -486,6 +486,13 @@ async function ensureDbTables() {
       await pool.query(`ALTER TABLE inbound_docs ADD COLUMN IF NOT EXISTS request_id TEXT;`);
       await pool.query(`CREATE INDEX IF NOT EXISTS inbound_docs_request_id_idx ON inbound_docs(request_id);`);
       devLog("✅ DB inbound_docs.request_id ensured");
+      try {
+  await pool.query(`ALTER TABLE inbound_docs ADD COLUMN IF NOT EXISTS file_hash TEXT;`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS inbound_docs_file_hash_idx ON inbound_docs(file_hash);`);
+  devLog("✅ DB inbound_docs.file_hash ensured");
+} catch (e: any) {
+  console.warn("⚠️ DB alter inbound_docs.file_hash failed (continuing):", e?.message || e);
+}    
     } catch (e: any) {
       console.warn("⚠️ DB alter inbound_docs.request_id failed (continuing):", e?.message || e);
     }
@@ -760,6 +767,7 @@ async function saveInboundDocToDb(args: {
               billing_status,
               blocked_reason,
               filename,
+              file_hash,
               r2_bucket,
               r2_key,
               doc_type,
@@ -768,8 +776,8 @@ async function saveInboundDocToDb(args: {
               ai_score,
               ai_json
               )
-      VALUES (
-  $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18::jsonb
+     VALUES (
+$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19::jsonb
 )
       `,
       [
@@ -2778,6 +2786,7 @@ async function processInboundDoc(args: {
   source: "resend" | "inbound-file" | "inbound-r2";
   filename: string;
   buffer: Buffer;
+  fileHash?: string;
   extractedText?: string;
   docType?: "RESUME" | "NON_RESUME";
   customerId?: string;
@@ -2806,7 +2815,7 @@ async function processInboundDoc(args: {
   filename: args.filename,
   r2Key: args.r2?.key,
 });
-
+// file-hash duplicate check goes after customerId is resolved
 // probe to confirm extraction worked
 console.log("🧪 AFTER_EXTRACT_BEFORE_START", {
   requestId: args.requestId,
@@ -2865,6 +2874,38 @@ let match: CustomerRow | null = null;
 // ✅ Prefer explicit customerId when provided (inbound-file/inbound-r2 testing & future API use)
 if (customerId) {
   resolvedCustomerId = customerId;
+}
+   // 🧾 Duplicate protection (30-day window)
+if (args.fileHash && customerId) {
+  try {
+    const dup = await pool.query(
+      `
+      SELECT id
+      FROM inbound_docs
+      WHERE customer_id = $1
+        AND file_hash = $2
+        AND created_at > NOW() - INTERVAL '30 days'
+      LIMIT 1
+      `,
+      [customerId, args.fileHash]
+    );
+
+    if (dup.rows.length > 0) {
+      console.log("🧷 DUPLICATE_FILE_SKIP:", {
+        customerId,
+        fileHash: args.fileHash,
+        filename: args.filename,
+      });
+
+      return {
+        ok: true,
+        skipped: true,
+        reason: "duplicate_file_30_day_rule",
+      } as any;
+    }
+  } catch (e: any) {
+    console.warn("⚠️ FILE_HASH_DUP_CHECK_FAILED:", e?.message || e);
+  }
 }
 // ✅ If customerId is provided, resolve customer directly (no intake email required)
 if (resolvedCustomerId) {
@@ -3920,20 +3961,22 @@ if (docType !== "RESUME") {
   });
   continue;
 }
+const fileHash = sha256Hex(buf);
 
-     const result = await processInboundDoc({
-        requestId: getRequestId(req),
-        source: "resend",
-        filename: safeName,
-        buffer: buf,
-        extractedText,
-        docType,
-        toEmail,
-        supportingDocuments: attachmentNames.filter((n: string) => n !== safeName),
-        r2,
-        savedLocal: null,
-        deletedLocal: true,
-       });
+const result = await processInboundDoc({
+  requestId: getRequestId(req),
+  source: "resend",
+  filename: safeName,
+  buffer: buf,
+  fileHash,
+  extractedText,
+  docType,
+  toEmail,
+  supportingDocuments: attachmentNames.filter((n: string) => n !== safeName),
+  r2,
+  savedLocal: null,
+  deletedLocal: true,
+});
 
           processed.push({ ok: true, filename: safeName, r2Key: r2.key, docType, result });
         }
@@ -4485,13 +4528,18 @@ if (criteria && typeof criteria === "object") {
     const tallySheetUrl = safeStr(tally?.spreadsheetUrl);
 
     if (!tallySheetId) {
-      throw new Error("Missing tallySheetId from createTallySheetForCustomer");
-    }
+  throw new Error("Missing tallySheetId from createTallySheetForCustomer");
+}
 
-     // Share the sheet with the customer so they can open it immediately
-      if (adminEmail) {
-   await ensureSheetSharedOnce(tallySheetId, adminEmail);
-    }
+const customerEmail = safeStr(payload?.email);
+
+if (customerEmail) {
+  await ensureSheetSharedOnce(tallySheetId, customerEmail);
+}
+
+if (adminEmail && adminEmail.toLowerCase() !== customerEmail.toLowerCase()) {
+  await ensureSheetSharedOnce(tallySheetId, adminEmail);
+}
     // 🔒 Enforce single-sheet job layout (no extra tabs, jobs down left)
     await ensureResumesTab(tallySheetId);
 
@@ -4919,12 +4967,14 @@ const customerId = safeStr((req.query as any)?.customerId || (req.body as any)?.
     } else {
       deletedLocal = true;
     }
-
-    const result = await processInboundDoc({
+    const fileHash = sha256Hex(f.buffer);
+   
+ const result = await processInboundDoc({
   requestId: getRequestId(req),
   source: "inbound-file",
   filename: safeName,
   buffer: f.buffer,
+  fileHash,
   extractedText,
   docType,
   toEmail,
@@ -5060,19 +5110,23 @@ if (body == null || typeof body !== "object") {
       if (!isAllowedFileByName(filename)) {
         return res.status(415).json(unsupportedFileTypePayload(filename));
       }
+       const buffer = await r2DownloadToBuffer({ key });
 
-      const buffer = await r2DownloadToBuffer({ key });
-      if (!buffer)
-        throw new AppError("Object not found", 404, "object_not_found", true);
+if (!buffer)
+  throw new AppError("Object not found", 404, "object_not_found", true);
 
-      if (buffer.length > MAX_ATTACHMENT_BYTES) {
-        throw new AppError(
-          "Payload too large",
-          413,
-          "payload_too_large",
-          true
-        );
-      }
+// 🧾 Compute file hash for duplicate protection
+const fileHash = sha256Hex(buffer);
+devLog("FILE_HASH:", fileHash);
+    
+if (buffer.length > MAX_ATTACHMENT_BYTES) {
+  throw new AppError(
+    "Payload too large",
+    413,
+    "payload_too_large",
+    true
+  );
+}
 
       const extractedText = await extractTextFromBuffer(filename, buffer);
 
@@ -5085,6 +5139,7 @@ if (body == null || typeof body !== "object") {
   source: "inbound-r2",
   filename,
   buffer,
+  fileHash,
   extractedText,
   docType,
   toEmail,
@@ -5122,6 +5177,12 @@ async function runNightlyJob(): Promise<{ ok: true; date: string; report: string
 
   // Trial enforcement
   for (const c of customers) {
+      console.log("🧪 TRIAL_CHECK_DEBUG:", {
+      customerId: c.customerId,
+      companyName: c.companyName,
+      status: c.status,
+      trialEndsAtISO: c.trialEndsAtISO,
+    });   
     const trialEnds = parseISODate(c.trialEndsAtISO);
     const status = (c.status || "").toLowerCase();
     if (!trialEnds) continue;
