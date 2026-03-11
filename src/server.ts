@@ -1406,7 +1406,7 @@ async function ensureTodayTallyRow(
     await ensureSheetSharedOnce(tallySheetId, ADMIN_EMAIL);
   }
 
-  const TALLY_TAB = "Resumes";
+  const TALLY_TAB = "Tally";
 
 const existingRes = await sheets.spreadsheets.values.get({
   spreadsheetId: tallySheetId,
@@ -1462,7 +1462,7 @@ async function readTodayTallyRowByHeaders(
 
   const head = await sheets.spreadsheets.values.get({
     spreadsheetId: tallySheetId,
-    range: "A1:Z1",
+    range: "Tally!A1:Z1",
   });
 
   const headersRaw = (head.data.values?.[0] || []).map((h: any) => safeStr(h));
@@ -1483,7 +1483,7 @@ async function readTodayTallyRowByHeaders(
 
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId: tallySheetId,
-    range: "A2:Z1000",
+    range: "Tally!A2:Z1000",
   });
 
   const rows = res.data.values || [];
@@ -2474,7 +2474,15 @@ async function ensureResumesTab(spreadsheetId: string) {
   await ensureSingleTabResumes(spreadsheetId);
 
   const sheets = google.sheets({ version: "v4", auth: oauth2Client });
-
+   // Remove legacy data to the right of our current 8-column sheet layout
+try {
+  await sheets.spreadsheets.values.clear({
+    spreadsheetId,
+    range: `${TAB}!I:Z`,
+  });
+} catch (e) {
+  console.warn("LEGACY_COLUMN_CLEAR_FAILED", e);
+}
   const sheetId = await getSheetIdByTitle(spreadsheetId, TAB);
   if (sheetId != null) {
     await applyResumesSheetLayout({
