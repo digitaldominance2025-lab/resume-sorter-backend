@@ -2392,15 +2392,7 @@ await colorDecisionCell({
 });
 
 devLog("🧩 RESUME_APPENDED_UNDER_JOB:", args.spreadsheetId, args.jobTitle, { rowNumber });
-
-// Apply layout once
-await applyResumesSheetLayout({
-  sheets,
-  spreadsheetId: args.spreadsheetId,
-  sheetId,
-});
 }
-
 async function ensureSheetTabExists(spreadsheetId: string, title: string) {
   const sheets = google.sheets({ version: "v4", auth: oauth2Client });
 
@@ -3812,8 +3804,7 @@ app.post(
         RETURNING event_id
         `,
         ["resend", svixId]
-      );
-
+              );
       if ((dedupe.rowCount || 0) === 0) {
         console.log("🧷 RESEND_WEBHOOK_DUPLICATE_SKIP", {
           svixId,
