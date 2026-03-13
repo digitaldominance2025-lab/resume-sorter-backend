@@ -2855,8 +2855,9 @@ async function processInboundDoc(args: {
   fileHash?: string;
   extractedText?: string;
   docType?: "RESUME" | "NON_RESUME";
-  customerId?: string;
   toEmail?: string;
+  senderEmail?: string;
+  customerId?: string;
   supportingDocuments?: string[];
   r2?: { bucket: string; key: string } | null;
   savedLocal?: string | null;
@@ -2915,6 +2916,7 @@ try {
   throw err;
 }
 
+
 console.log("🧪 PROCESS_INBOUND_DOC_TYPE", {
   requestId: args.requestId,
   filename: args.filename,
@@ -2930,11 +2932,14 @@ console.log("🧪 PROCESS_INBOUND_DOC_TYPE", {
       max: MAX_EXTRACTED_CHARS,
     });
   }
-  const toEmail = safeStr(args.toEmail).trim().toLowerCase();
+const toEmail = safeStr(args.toEmail).trim().toLowerCase();
+const senderEmail = safeStr((args as any)?.senderEmail || "").trim().toLowerCase();
 const filenameForEmail = safeStr(args.filename);
 const r2KeyForEmail = safeStr(args?.r2?.key || "");
 let resolvedCustomerId = "";
 let customerId = safeStr((args as any).customerId).trim();
+
+
 let match: CustomerRow | null = null;
 
 // ✅ Prefer explicit customerId when provided (inbound-file/inbound-r2 testing & future API use)
@@ -3033,6 +3038,40 @@ if (!resolvedCustomerId && toEmail) {
       resolvedCustomerId,
     } as any;
   }
+  // If this sender already has a prior resume for this customer,
+// do not let later files enter the main resume-scoring path.
+let senderAlreadyHasResume = false;
+
+if (customerId && senderEmail) {
+  try {
+    const priorResume = await pool.query(
+      `
+      SELECT id, filename, request_id
+      FROM inbound_docs
+      WHERE customer_id = $1
+        AND sender_email = $2
+        AND doc_type = 'RESUME'
+      ORDER BY created_at ASC
+      LIMIT 1
+      `,
+      [customerId, senderEmail]
+    );
+
+    senderAlreadyHasResume = priorResume.rows.length > 0;
+  } catch (e: any) {
+    console.warn("⚠️ SENDER_PRIOR_RESUME_LOOKUP_FAILED:", e?.message || e);
+  }
+}
+
+if (senderAlreadyHasResume && docType === "RESUME") {
+  console.log("🧪 SENDER_FORCE_NON_RESUME", {
+    requestId: args.requestId,
+    customerId,
+    senderEmail,
+    filename: args.filename,
+  });
+  docType = "NON_RESUME";
+}
   const customerRubric = customerId ? await getCustomerRubric(customerId) : null;
   let matchedJobRubric: any = null;
   let matchedJobId = "";
@@ -3041,7 +3080,7 @@ if (!resolvedCustomerId && toEmail) {
   // ----------------------------
   let ai: any = null;
 
-  try {
+  try {   
     if (blocked) {
       ai = { skipped: true, reason: "billing_block", billingStatus, blockedReason };
     } else if (docType === "RESUME" && extractedText.trim().length > 40) {
@@ -3863,6 +3902,9 @@ app.post(
       if (!email) return res.json({ ok: true, fetched: false });
 
       const toEmail = pickResendTo(email);
+      const senderEmail = safeStr((email as any)?.from?.email || (email as any)?.from || "")
+        .trim()
+        .toLowerCase();
       if (!toEmail) return res.json({ ok: true, fetched: true, processed: false, reason: "missing_to" });
 
       const atts = await resendListReceivedAttachments(emailId);
@@ -4038,6 +4080,7 @@ const result = await processInboundDoc({
   extractedText,
   docType,
   toEmail,
+  senderEmail,
   supportingDocuments: attachmentNames.filter((n: string) => n !== safeName),
   r2,
   savedLocal: null,
@@ -4968,7 +5011,10 @@ app.post("/webhooks/inbound-file", rateLimit("inbound_file"), inboundFileMulter,
     if (!f) return res.status(400).json({ ok: false, error: "no_file" });
 
     const toEmail = safeStr((req.body as any)?.toEmail || (req.body as any)?.to).trim().toLowerCase();
-if (!toEmail) return res.status(400).json({ ok: false, error: "missing_toEmail" });
+    const senderEmail = safeStr((req.body as any)?.senderEmail || (req.body as any)?.fromEmail || "")
+  .trim()
+  .toLowerCase();
+    if (!toEmail) return res.status(400).json({ ok: false, error: "missing_toEmail" });
 
 const customerId = safeStr((req.query as any)?.customerId || (req.body as any)?.customerId).trim();
     const bucket = safeStr(process.env.CLOUDFLARE_R2_BUCKET);
@@ -5054,6 +5100,7 @@ const customerId = safeStr((req.query as any)?.customerId || (req.body as any)?.
   extractedText,
   docType,
   toEmail,
+  senderEmail,
   customerId,
   r2,
   savedLocal,
@@ -5163,7 +5210,9 @@ if (body == null || typeof body !== "object") {
       const toEmail = safeStr(body?.toEmail || body?.to)
         .trim()
         .toLowerCase();
-
+       const senderEmail = safeStr(body?.senderEmail || body?.fromEmail || "")
+         .trim()
+         .toLowerCase();
       if (!key) throw new AppError("Missing key", 400, "missing_key", true);
       if (!toEmail)
         throw new AppError("Missing toEmail", 400, "missing_toEmail", true);
@@ -5219,6 +5268,7 @@ if (buffer.length > MAX_ATTACHMENT_BYTES) {
   extractedText,
   docType,
   toEmail,
+  senderEmail,
   r2: { bucket, key },
   savedLocal: null,
   deletedLocal: true,
