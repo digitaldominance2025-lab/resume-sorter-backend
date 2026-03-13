@@ -2435,13 +2435,9 @@ try {
   console.warn("LEGACY_COLUMN_CLEAR_FAILED", e);
 }
   const sheetId = await getSheetIdByTitle(spreadsheetId, TAB);
-  if (sheetId != null) {
-    await applyResumesSheetLayout({
-      sheets,
-      spreadsheetId,
-      sheetId,
-    });
-  }
+// IMPORTANT: do NOT apply layout on every ensureResumesTab() call.
+// This function runs during normal flow and repeated layout writes burn Sheets quota.
+// Layout should only be applied during initial creation / hard repair.
 
   let values = await readResumesTabValues(spreadsheetId);
   const hasAnyJobSections = values.some((row) => isJobHeaderRow(row));
@@ -2466,7 +2462,14 @@ try {
     });
 
     values = await readResumesTabValues(spreadsheetId);
-     console.log("🧪 RESUMES_TAB_HARD_REPAIR_AFTER_READ", {
+        if (sheetId != null) {
+      await applyResumesSheetLayout({
+        sheets,
+        spreadsheetId,
+        sheetId,
+      });
+    } 
+    console.log("🧪 RESUMES_TAB_HARD_REPAIR_AFTER_READ", {
   spreadsheetId,
   topRows: values.slice(0, 8),
 }); 
@@ -3173,15 +3176,12 @@ if (!resolvedCustomerId && toEmail) {
   }
   const textPreview = String(extractedText || "").slice(0, 400);
   const candidateEmail = extractCandidateEmail(extractedText || "");
-  const supportingDocumentsCell = Array.isArray(args.supportingDocuments)
-  ? args.supportingDocuments
-      .map((name: string) => {
-        const label = safeStr(name).replace(/"/g, '""');
-        const link = `${API_BASE_URL}/r/${args.requestId}`;
-        return `=HYPERLINK("${link}","${label}")`;
-      })
-      .join(", ")
-  : "";
+    const supportingDocumentsCell = Array.isArray(args.supportingDocuments)
+    ? args.supportingDocuments
+        .map((name: string) => safeStr(name))
+        .filter(Boolean)
+        .join(", ")
+    : "";
   
   const aiScoreNum = Number(ai?.score);
   await saveInboundDocToDb({
