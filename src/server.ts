@@ -3172,34 +3172,10 @@ if (!resolvedCustomerId && toEmail) {
         const docHash = sha256Hex(args.buffer);
         const docToken = `hash:${docHash}`;
 
-        // AI idempotency (daily): if docToken already in column G today, skip OpenAI
-        let alreadyProcessedToday = false;
-
-        try {
-          if (tallySheetId && customerId && docToken) {
-            const sheets = google.sheets({ version: "v4", auth: oauth2Client });
-
-            const { rowIndex0 } = await ensureTodayTallyRow(tallySheetId, today, customerId);
-            const rowNumber = rowIndex0 + 2;
-
-            const existingG = await sheets.spreadsheets.values.get({
-              spreadsheetId: tallySheetId,
-              range: `G${rowNumber}`,
-            });
-
-            const currentCsv = safeStr(existingG.data.values?.[0]?.[0]);
-            alreadyProcessedToday = currentCsv
-              ? currentCsv
-                  .split(",")
-                  .map((s: string) => s.trim())
-                  .filter(Boolean)
-                  .includes(docToken)
-              : false;
-          }
-        } catch (e: any) {
-          console.warn("⚠️ AI_IDEMPOTENCY_CHECK_FAILED:", e?.message || e);
-          alreadyProcessedToday = false;
-        }
+                // Old Tally-tab daily idempotency disabled.
+        // Replay protection now happens at the webhook layer (svix-id),
+        // and duplicate file handling is done in processInboundDoc flow.
+        const alreadyProcessedToday = false;
 
         if (extractedText && extractedText.length >= 120) {
           if (alreadyProcessedToday) {
