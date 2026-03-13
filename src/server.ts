@@ -544,7 +544,20 @@ await pool.query(`
   CREATE INDEX IF NOT EXISTS manage_magic_links_expires_at_idx
   ON manage_magic_links(expires_at)
 `);
-  console.log("✅ DB tables ensured");
+     await pool.query(`
+      CREATE TABLE IF NOT EXISTS processed_webhooks (
+        provider TEXT NOT NULL,
+        event_id TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (provider, event_id)
+      )
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS processed_webhooks_created_at_idx
+      ON processed_webhooks(created_at)
+    `);
+console.log("✅ DB tables ensured");
   } catch (e: any) {
     console.warn("⚠️ DB bootstrap failed (continuing):", e?.message || e);
   }
@@ -2250,7 +2263,55 @@ async function ensureJobSectionExists(spreadsheetId: string, jobTitle: string): 
   await appendJobSectionAtBottom(spreadsheetId, jobTitle);
   devLog("✅ JOB_SECTION_CREATED:", spreadsheetId, jobTitle);
 }
+async function appendSupportingDocToExistingRow(args: {
+  spreadsheetId: string;
+  requestId: string;
+  supportingValue: string;
+}) {
+  const sheets = google.sheets({ version: "v4", auth: oauth2Client });
+  const TAB = "Resumes";
 
+  const supportingValue = safeStr(args.supportingValue).trim();
+  if (!supportingValue) return false;
+
+  const values = await readResumesTabValues(args.spreadsheetId);
+
+  for (let i = 0; i < values.length; i++) {
+    const row = values[i] || [];
+
+    // skip job headers / column headers / short rows
+    if (isJobHeaderRow(row)) continue;
+    if (safeStr(row[0]) === "Date Received") continue;
+
+    const notesCell = safeStr(row[7]);
+    if (!notesCell.includes(args.requestId)) continue;
+
+    const currentSupporting = safeStr(row[5]);
+
+    const parts = currentSupporting
+  ? currentSupporting.split(",").map((s: string) => s.trim()).filter(Boolean)
+  : [];
+    if (!parts.includes(supportingValue)) {
+      parts.push(supportingValue);
+    }
+
+    const nextSupporting = parts.join(", ");
+    const rowNumber = i + 1;
+
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: args.spreadsheetId,
+      range: `${TAB}!F${rowNumber}`,
+      valueInputOption: "USER_ENTERED",
+      requestBody: {
+        values: [[nextSupporting]],
+      },
+    });
+
+    return true;
+  }
+
+  return false;
+}
 async function appendResumeUnderJobSection(args: {
   spreadsheetId: string;
   jobTitle: string;
@@ -2307,14 +2368,20 @@ if (start0 === -1) {
   const normalizeDocLabel = (s: string) =>
     safeStr(s)
       .toLowerCase()
+      .replace(/=hyperlink\(\s*"[^"]*"\s*,\s*"([^"]*)"\s*\)/i, "$1")
       .replace(/\.[a-z0-9]+$/i, "")
       .replace(/[^a-z0-9]/g, "");
 
-  const mainResumeLabel = normalizeDocLabel(args.row.filename || args.row.resumeLink || "");
+  const mainResumeLabel = normalizeDocLabel(args.row.filename || "");
 
-  if (normalizeDocLabel(supportingDocsValue) === mainResumeLabel) {
-    supportingDocsValue = "";
-  }
+  const parts = supportingDocsValue
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  const filtered = parts.filter((part) => normalizeDocLabel(part) !== mainResumeLabel);
+
+  supportingDocsValue = filtered.join(", ");
 }
 // If we can't resolve sheetId, fall back to values.append at bottom (safe)
 if (sheetId == null) {
@@ -2375,6 +2442,7 @@ const rowNumber = insertAt0 + 1; // 1-based for A1 notation
 console.log("🧪 SHEET_WRITE_DEBUG", {
   spreadsheetId: args.spreadsheetId,
   jobTitle: args.jobTitle,
+  requestId: args.row.requestId,  
   insertAt0,
   rowNumber,
   rowValues: rowValues[0],
@@ -2990,33 +3058,36 @@ let match: CustomerRow | null = null;
 if (customerId) {
   resolvedCustomerId = customerId;
 }
-   // 🧾 Duplicate protection (30-day window)
+   // 🧾 Duplicate detection (30-day window)
+// Do NOT hard-return anymore.
+// We want later duplicates / extra docs to be attachable to the original sheet row.
+let duplicateWithin30Days = false;
+
 if (args.fileHash && customerId) {
   try {
     const dup = await pool.query(
       `
-      SELECT id
+      SELECT id, request_id, r2_key, filename
       FROM inbound_docs
       WHERE customer_id = $1
         AND file_hash = $2
         AND created_at > NOW() - INTERVAL '30 days'
+      ORDER BY created_at ASC
       LIMIT 1
       `,
       [customerId, args.fileHash]
     );
 
     if (dup.rows.length > 0) {
-      console.log("🧷 DUPLICATE_FILE_SKIP:", {
+      duplicateWithin30Days = true;
+
+      console.log("🧷 DUPLICATE_FILE_DETECTED:", {
         customerId,
         fileHash: args.fileHash,
         filename: args.filename,
+        existingRequestId: safeStr(dup.rows[0]?.request_id),
+        existingR2Key: safeStr(dup.rows[0]?.r2_key),
       });
-
-      return {
-        ok: true,
-        skipped: true,
-        reason: "duplicate_file_30_day_rule",
-      } as any;
     }
   } catch (e: any) {
     console.warn("⚠️ FILE_HASH_DUP_CHECK_FAILED:", e?.message || e);
@@ -3202,12 +3273,15 @@ if (!resolvedCustomerId && toEmail) {
       tallyResult = { skipped: true, reason: "idempotent_skip", today, shouldIncrement: false };
       console.log("🧷 TALLY_SKIP_DUPLICATE:", customerId, today, docToken);
     } else if (sheetId && customerId) {
-      // TEMP: disable tally sheet writes (prevents duplicate rows)
-        tallyResult = {
-        today: formatISO(toZonedTime(new Date(), TIMEZONE), { representation: "date" }),
-        nextCount: 1,
-        shouldIncrement: true,
-       };
+      tallyResult = await tallyApply(
+        sheetId,
+        customerId,
+        docType,
+        args.source,
+        r2Key,
+        docToken,
+        ai
+      );
 
       if ((tallyResult as any)?.shouldIncrement === false) {
         logInfo("TALLY_APPLY_SKIP_OK", {
@@ -3276,7 +3350,7 @@ if (!resolvedCustomerId && toEmail) {
    // Result email (best-effort) — STRICT idempotency gate (only email when tally increments)
   try {
     const didIncrement = (tallyResult as any)?.shouldIncrement === true;
-
+    const treatAsSupportingOnly = duplicateWithin30Days === true;
     // ✅ Sheet must have all resumes: append row ONLY when tally increments
     try {
       const sheetId = safeStr(match?.tallySheetId);
@@ -3291,7 +3365,7 @@ if (!resolvedCustomerId && toEmail) {
         .trim()
         .replace(/"/g, '""');
       const resumeLinkCell = `=HYPERLINK("${resumeLink}","${resumeLinkLabel}")`;
-      if (didIncrement && sheetId && customerId && isResumeDoc) {
+      if (sheetId && customerId && isResumeDoc && !treatAsSupportingOnly && didIncrement) {
         const scoreNum = Number(ai?.score);
         const score = Number.isFinite(scoreNum) ? scoreNum : null;
         
@@ -3854,6 +3928,11 @@ app.post(
       const svixId = String(req.headers["svix-id"] || "");
       const svixTs = String(req.headers["svix-timestamp"] || "");
       const svixSig = String(req.headers["svix-signature"] || "");
+            if (!svixId) {
+        return res.status(400).json({ ok: false, error: "missing_svix_id" });
+      }
+
+      
       const payload = (req.body as Buffer).toString("utf8");
       const wh = new Webhook(RESEND_WEBHOOK_SECRET);
       const evt = wh.verify(payload, {
@@ -3861,7 +3940,28 @@ app.post(
         "svix-timestamp": svixTs,
         "svix-signature": svixSig,
       }) as any;
+         try {
+  await pool.query(
+    `
+    INSERT INTO processed_webhooks (provider, event_id)
+    VALUES ($1, $2)
+    `,
+    ["resend", svixId]
+  );
+} catch (e: any) {
+  const msg = String(e?.message || "").toLowerCase();
+  const code = safeStr(e?.code).toLowerCase();
 
+  if (code === "23505" || msg.includes("duplicate key")) {
+    console.log("🧷 RESEND_WEBHOOK_DUPLICATE_SKIP", {
+      svixId,
+      requestId: getRequestId(req),
+    });
+    return res.json({ ok: true, duplicate: true, provider: "resend", svixId });
+  }
+
+  throw e;
+}
       // ✅ DEV ONLY: allow forcing a fake attachment list for size-guard testing
       const RESEND_DEV_FAKE_ATTACHMENTS = truthyEnv("RESEND_DEV_FAKE_ATTACHMENTS");
 
@@ -3890,6 +3990,7 @@ app.post(
       console.log("🧪 RESEND_WEBHOOK_VERIFIED", {
        type,
       emailId: safeStr(evt?.data?.id || evt?.data?.email_id),
+      svixId,
       dataKeys: Object.keys(evt?.data || {}),
       requestId: getRequestId(req),
       }); 
@@ -5360,7 +5461,17 @@ try {
   continue;
 }
       if (!gate.allowed) continue;
+       const startedAt = safeStr(c.trialStartsAtISO);
 
+      if (NIGHTLY_EMAIL_CUTOFF_DATE && startedAt && startedAt < NIGHTLY_EMAIL_CUTOFF_DATE) {
+        devLog("🌙 NIGHTLY_SKIP_CUTOFF:", {
+          customerId: c.customerId,
+          companyName: c.companyName,
+          startedAt,
+          cutoff: NIGHTLY_EMAIL_CUTOFF_DATE,
+        });
+        continue;
+      }
       const sheetUrl = `https://docs.google.com/spreadsheets/d/${sheetId}`;
       const customerId = safeStr(c.customerId);
       const manageMagic = await createManageMagicLink({ customerId, expiresInHours: 48 });
@@ -5470,7 +5581,7 @@ app.get("/admin/nightly-run", async (_req: Request, res: Response, next: any) =>
 
 // Cron (local-only; prod should use Render Cron / external scheduler)
 const ENABLE_LOCAL_CRON = String(process.env.ENABLE_LOCAL_CRON || "").toLowerCase() === "true";
-
+const NIGHTLY_EMAIL_CUTOFF_DATE = safeStr(process.env.NIGHTLY_EMAIL_CUTOFF_DATE); // YYYY-MM-DD
 if (ENABLE_LOCAL_CRON) {
   cron.schedule(
     NIGHTLY_CRON,
