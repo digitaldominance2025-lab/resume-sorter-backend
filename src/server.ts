@@ -1523,133 +1523,21 @@ async function tallyApply(
   docToken?: string,
   ai?: any
 ) {
-  const sheets = google.sheets({ version: "v4", auth: oauth2Client });
   const today = formatISO(toZonedTime(new Date(), TIMEZONE), { representation: "date" });
 
-  const { rowIndex0, currentCount, currentNotes } = await ensureTodayTallyRow(tallySheetId, today, customerId);
+  // Legacy Tally-tab logic removed.
+  // Duplicate/replay protection now happens through:
+  // 1) Resend webhook svix-id dedupe
+  // 2) duplicateWithin30Days file-hash detection
+  // 3) row merge behavior in the Resumes sheet flow
+  const shouldIncrement = docType === "RESUME";
 
-  const cleanedNotes = stripR2FromNotes(currentNotes)
-    .split(",")
-    .map((s: string) => s.trim())
-    .filter(Boolean)
-    .filter((s: string) => s !== "inbound-file:NON_RESUME")
-    .join(", ");
-
-  const rowNumber = rowIndex0 + 2;
-  const note = docType === "RESUME" ? `${source}:RESUME` : `${source}:NON_RESUME`;
-  const nextNotes = appendNote(cleanedNotes, note);
-
-  // idempotency: if docToken already recorded today, do not increment count again
-  let shouldIncrement = docType === "RESUME";
-  if (docType === "RESUME" && docToken) {
-    try {
-      const existingG = await sheets.spreadsheets.values.get({
-        spreadsheetId: tallySheetId,
-        range: `G${rowNumber}`,
-      });
-      const currentG = safeStr(existingG.data.values?.[0]?.[0]);
-
-      const hasTokenAlready = currentG
-        ? currentG
-            .split(",")
-            .map((s: string) => s.trim())
-            .filter(Boolean)
-            .includes(docToken)
-        : false;
-
-      if (hasTokenAlready) {
-        shouldIncrement = false;
-        console.log("🧷 TALLY_IDEMPOTENT_SKIP:", customerId, today, docToken);
-        return { today, nextCount: currentCount, nextNotes, shouldIncrement: false };
-      }
-    } catch {
-      // ignore
-    }
-  }
-
-const nextCount = shouldIncrement ? currentCount + 1 : currentCount;
-
-// TEMP: disable tally sheet mutation to prevent duplicate resume rows
-/*
-await sheets.spreadsheets.values.update({
-  spreadsheetId: tallySheetId,
-  range: `B${rowNumber}`,
-  valueInputOption: "RAW",
-  requestBody: { values: [[nextCount]] },
-});
-
-await sheets.spreadsheets.values.update({
-  spreadsheetId: tallySheetId,
-  range: `C${rowNumber}`,
-  valueInputOption: "RAW",
-  requestBody: { values: [[nextNotes]] },
-});
-
-await sheets.spreadsheets.values.update({
-  spreadsheetId: tallySheetId,
-  range: `D${rowNumber}`,
-  valueInputOption: "RAW",
-  requestBody: { values: [[customerId]] },
-});
-
-if (docType === "RESUME" && r2Key) {
-
-  await sheets.spreadsheets.values.update({
-    spreadsheetId: tallySheetId,
-    range: `E${rowNumber}`,
-    valueInputOption: "RAW",
-    requestBody: { values: [[r2Key]] },
-  });
-
-  const url = buildR2PublicUrl(r2Key);
-  const fileCell = url ? `=HYPERLINK("${url}","resume file")` : "";
-
-  await sheets.spreadsheets.values.update({
-    spreadsheetId: tallySheetId,
-    range: `F${rowNumber}`,
-    valueInputOption: "USER_ENTERED",
-    requestBody: { values: [[fileCell || url]] },
-  });
-
-  const existingG = await sheets.spreadsheets.values.get({
-    spreadsheetId: tallySheetId,
-    range: `G${rowNumber}`,
-  });
-
-  const currentG = safeStr(existingG.data.values?.[0]?.[0]);
-  const tokens = currentG
-    ? currentG.split(",").map((s: string) => s.trim()).filter(Boolean)
-    : [];
-
-  const wanted: string[] = [];
-  if (docToken) wanted.push(docToken);
-  if (r2Key) wanted.push(`r2:${r2Key}`);
-
-  for (const w of wanted) {
-    if (!tokens.includes(w)) tokens.push(w);
-  }
-
-  const nextG = tokens.join(", ");
-
-  await sheets.spreadsheets.values.update({
-    spreadsheetId: tallySheetId,
-    range: `G${rowNumber}`,
-    valueInputOption: "RAW",
-    requestBody: { values: [[nextG]] },
-  });
-
-  const scoreNum = Number(ai?.score);
-  if (Number.isFinite(scoreNum)) {
-    await sheets.spreadsheets.values.update({
-      spreadsheetId: tallySheetId,
-      range: `H${rowNumber}`,
-      valueInputOption: "RAW",
-      requestBody: { values: [[scoreNum]] },
-    });
-  }
-}
-*/
-  return { today, nextCount, nextNotes, shouldIncrement };
+  return {
+    today,
+    nextCount: shouldIncrement ? 1 : 0,
+    nextNotes: docType === "RESUME" ? `${source}:RESUME` : `${source}:NON_RESUME`,
+    shouldIncrement,
+  };
 }
 // ============================
 // Resumes Tab Helpers (Sheet must have all resumes)
