@@ -3804,28 +3804,23 @@ app.post(
         "svix-timestamp": svixTs,
         "svix-signature": svixSig,
       }) as any;
-         try {
-  await pool.query(
-    `
-    INSERT INTO processed_webhooks (provider, event_id)
-    VALUES ($1, $2)
-    `,
-    ["resend", svixId]
-  );
-} catch (e: any) {
-  const msg = String(e?.message || "").toLowerCase();
-  const code = safeStr(e?.code).toLowerCase();
+              const dedupe = await pool.query(
+        `
+        INSERT INTO processed_webhooks (provider, event_id)
+        VALUES ($1, $2)
+        ON CONFLICT (provider, event_id) DO NOTHING
+        RETURNING event_id
+        `,
+        ["resend", svixId]
+      );
 
-  if (code === "23505" || msg.includes("duplicate key")) {
-    console.log("🧷 RESEND_WEBHOOK_DUPLICATE_SKIP", {
-      svixId,
-      requestId: getRequestId(req),
-    });
-    return res.json({ ok: true, duplicate: true, provider: "resend", svixId });
-  }
-
-  throw e;
-}
+      if ((dedupe.rowCount || 0) === 0) {
+        console.log("🧷 RESEND_WEBHOOK_DUPLICATE_SKIP", {
+          svixId,
+          requestId: getRequestId(req),
+        });
+        return res.json({ ok: true, duplicate: true, provider: "resend", svixId });
+      }
       // ✅ DEV ONLY: allow forcing a fake attachment list for size-guard testing
       const RESEND_DEV_FAKE_ATTACHMENTS = truthyEnv("RESEND_DEV_FAKE_ATTACHMENTS");
 
