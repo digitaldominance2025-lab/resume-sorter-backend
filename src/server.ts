@@ -2394,6 +2394,85 @@ await colorDecisionCell({
 
 devLog("🧩 RESUME_APPENDED_UNDER_JOB:", args.spreadsheetId, args.jobTitle, { rowNumber });
 }
+async function appendSupportingDocToExistingRequest(args: {
+  spreadsheetId: string;
+  existingRequestId: string;
+  filename: string;
+}) {
+  const sheets = google.sheets({ version: "v4", auth: oauth2Client });
+  const TAB = "Resumes";
+
+  const values = await readResumesTabValues(args.spreadsheetId);
+
+  const normalizeDocLabel = (s: string) =>
+    safeStr(s)
+      .toLowerCase()
+      .replace(/=hyperlink\(\s*"[^"]*"\s*,\s*"([^"]*)"\s*\)/i, "$1")
+      .replace(/\.[a-z0-9]+$/i, "")
+      .replace(/[^a-z0-9]/g, "");
+
+  const newDocLabelRaw = safeStr(args.filename);
+  const newDocLabelNorm = normalizeDocLabel(newDocLabelRaw);
+
+  let targetRowNumber = -1;
+
+  for (let i = 0; i < values.length; i++) {
+    const row = values[i] || [];
+    const linkCell = safeStr(row[4]); // column E = Link
+    if (linkCell.includes(`/r/${args.existingRequestId}`)) {
+      targetRowNumber = i + 1; // sheet rows are 1-based
+      break;
+    }
+  }
+
+  if (targetRowNumber < 0) {
+    console.log("⚠️ SUPPORTING_DOC_TARGET_ROW_NOT_FOUND", {
+      spreadsheetId: args.spreadsheetId,
+      existingRequestId: args.existingRequestId,
+      filename: args.filename,
+    });
+    return { ok: false, reason: "target_row_not_found" as const };
+  }
+
+  const existingCell = safeStr(values[targetRowNumber - 1]?.[5]); // column F = Supporting Documents
+
+ const parts = existingCell
+  .split(",")
+  .map((s: string) => s.trim())
+  .filter(Boolean);
+
+const alreadyPresent = parts.some((part: string) => normalizeDocLabel(part) === newDocLabelNorm);
+  if (alreadyPresent) {
+    console.log("🧷 SUPPORTING_DOC_ALREADY_PRESENT", {
+      spreadsheetId: args.spreadsheetId,
+      existingRequestId: args.existingRequestId,
+      filename: args.filename,
+      rowNumber: targetRowNumber,
+    });
+    return { ok: true, skipped: true, rowNumber: targetRowNumber };
+  }
+
+  const nextValue = parts.length ? `${parts.join(", ")}, ${newDocLabelRaw}` : newDocLabelRaw;
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: args.spreadsheetId,
+    range: `${TAB}!F${targetRowNumber}`,
+    valueInputOption: "USER_ENTERED",
+    requestBody: {
+      values: [[nextValue]],
+    },
+  });
+
+  console.log("🧷 SUPPORTING_DOC_APPENDED", {
+    spreadsheetId: args.spreadsheetId,
+    existingRequestId: args.existingRequestId,
+    filename: args.filename,
+    rowNumber: targetRowNumber,
+    nextValue,
+  });
+
+  return { ok: true, rowNumber: targetRowNumber, nextValue };
+}
 async function ensureSheetTabExists(spreadsheetId: string, title: string) {
   const sheets = google.sheets({ version: "v4", auth: oauth2Client });
 
@@ -3014,6 +3093,20 @@ if (args.fileHash && customerId) {
         existingRequestId: safeStr(dup.rows[0]?.request_id),
         existingR2Key: safeStr(dup.rows[0]?.r2_key),
       });
+     try {
+  const existingRequestId = safeStr(dup.rows[0]?.request_id);
+  const sheetId = safeStr(match?.tallySheetId);
+
+  if (existingRequestId && sheetId && args.filename) {
+    await appendSupportingDocToExistingRequest({
+      spreadsheetId: sheetId,
+      existingRequestId,
+      filename: args.filename,
+    });
+  }
+} catch (e: any) {
+  console.warn("⚠️ SUPPORTING_DOC_APPEND_FAILED:", e?.message || e);
+}
     }
   } catch (e: any) {
     console.warn("⚠️ FILE_HASH_DUP_CHECK_FAILED:", e?.message || e);
