@@ -2402,7 +2402,13 @@ async function appendSupportingDocToExistingRequest(args: {
   const sheets = google.sheets({ version: "v4", auth: oauth2Client });
   const TAB = "Resumes";
 
-  const values = await readResumesTabValues(args.spreadsheetId);
+  const formulaResp = await sheets.spreadsheets.values.get({
+  spreadsheetId: args.spreadsheetId,
+  range: `${TAB}!A:H`,
+  valueRenderOption: "FORMULA",
+});
+
+const values = formulaResp.data.values || [];
 
   const normalizeDocLabel = (s: string) =>
     safeStr(s)
