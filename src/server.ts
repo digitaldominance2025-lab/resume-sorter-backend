@@ -2654,6 +2654,15 @@ try {
     for (let i = 0; i < refreshed.length; i++) {
       const row = refreshed[i] || [];
       if (isJobHeaderRow(row)) {
+        await sheets.spreadsheets.values.update({
+          spreadsheetId,
+          range: `${TAB}!A${i + 2}:J${i + 2}`,
+          valueInputOption: "RAW",
+          requestBody: {
+            values: [[...RESUME_COL_HEADERS]],
+          },
+        });
+
         await sheets.spreadsheets.batchUpdate({
           spreadsheetId,
           requestBody: {
