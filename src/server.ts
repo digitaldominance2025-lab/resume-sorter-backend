@@ -2452,11 +2452,9 @@ if (targetRowNumber < 0) {
 
   const existingCell = safeStr(values[targetRowNumber - 1]?.[5]); // column F = Supporting Documents
 
- const parts = existingCell
-  .split("\n")
-  .map((s: string) => s.trim())
-  .filter(Boolean)
-  .filter((part: string) => /^=HYPERLINK\(/i.test(part));
+ const parts = (existingCell.match(/page\d+/gi) || [])
+  .map((s: string) => s.trim().toLowerCase());
+
 
   const alreadyPresent = false;
   const pageNumber = parts.length + 1;
@@ -2470,11 +2468,7 @@ if (targetRowNumber < 0) {
     range: `${TAB}!F${targetRowNumber}`,
     valueInputOption: "USER_ENTERED",
     requestBody: {
-      values: [[
-  nextValue.split("\n").map((label: string, i: number) =>
-    `=HYPERLINK("${BASE_URL}/r/${args.existingRequestId}","${label}")`
-  ).join("\n")
-]],
+      values: [[nextValue]],
     },
   });
 
