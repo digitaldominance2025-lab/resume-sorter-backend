@@ -3163,15 +3163,28 @@ if (senderAlreadyHasResume && docType === "RESUME") {
     const sheetId = safeStr(match?.tallySheetId);
     const r2Key = safeStr(args?.r2?.key || "");
     const docToken = `hash:${sha256Hex(args.buffer)}`;
-    const shouldSkipTally = ai?.skipped === true && ai?.reason === "idempotent_skip";
+const shouldSkipTally =
+  duplicateWithin30Days === true ||
+  (ai?.skipped === true && ai?.reason === "idempotent_skip");
 
-    if (blocked) {
-      tallyResult = { skipped: true, reason: "billing_block", billingStatus, blockedReason };
-    } else if (shouldSkipTally) {
-      const today = formatISO(toZonedTime(new Date(), TIMEZONE), { representation: "date" });
-      tallyResult = { skipped: true, reason: "idempotent_skip", today, shouldIncrement: false };
-      console.log("🧷 TALLY_SKIP_DUPLICATE:", customerId, today, docToken);
-    } else if (sheetId && customerId) {
+if (blocked) {
+  tallyResult = { skipped: true, reason: "billing_block", billingStatus, blockedReason };
+} else if (shouldSkipTally) {
+  const today = formatISO(toZonedTime(new Date(), TIMEZONE), { representation: "date" });
+  tallyResult = {
+    skipped: true,
+    reason: duplicateWithin30Days ? "duplicate_within_30_days" : "idempotent_skip",
+    today,
+    shouldIncrement: false,
+  };
+  console.log("🧷 TALLY_SKIP_DUPLICATE:", {
+    customerId,
+    today,
+    docToken,
+    duplicateWithin30Days,
+    requestId: args.requestId,
+  });
+} else if (sheetId && customerId) {
       tallyResult = await tallyApply(
         sheetId,
         customerId,
