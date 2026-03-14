@@ -2453,7 +2453,7 @@ if (targetRowNumber < 0) {
   const existingCell = safeStr(values[targetRowNumber - 1]?.[5]); // column F = Supporting Documents
 
  const parts = existingCell
-  .split(",")
+  .split("\n")
   .map((s: string) => s.trim())
   .filter(Boolean)
   .filter((part: string) => /^=HYPERLINK\(/i.test(part));
@@ -2461,7 +2461,8 @@ if (targetRowNumber < 0) {
   const alreadyPresent = false;
   const pageNumber = parts.length + 1;
   const supportDocLink = `${BASE_URL}/r/${args.existingRequestId}`;
-  const supportDocEntry = `=HYPERLINK("${supportDocLink}","page${pageNumber}")`;
+  const supportDocEntry = `page${pageNumber}`;
+
   const nextValue = parts.length ? `${parts.join(", ")}, ${supportDocEntry}` : supportDocEntry;
    
   await sheets.spreadsheets.values.update({
@@ -2469,7 +2470,11 @@ if (targetRowNumber < 0) {
     range: `${TAB}!F${targetRowNumber}`,
     valueInputOption: "USER_ENTERED",
     requestBody: {
-      values: [[nextValue]],
+      values: [[
+  nextValue.split("\n").map((label: string, i: number) =>
+    `=HYPERLINK("${BASE_URL}/r/${args.existingRequestId}","${label}")`
+  ).join("\n")
+]],
     },
   });
 
