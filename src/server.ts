@@ -1726,7 +1726,7 @@ async function applyResumesSheetLayout(args: {
                   sheetId: args.sheetId,
                   startRowIndex: 2,
                   startColumnIndex: 0,
-                  endColumnIndex: 8,
+                  endColumnIndex: 10,
                 },
               ],
               booleanRule: {
@@ -1750,7 +1750,7 @@ async function applyResumesSheetLayout(args: {
                   sheetId: args.sheetId,
                   startRowIndex: 2,
                   startColumnIndex: 0,
-                  endColumnIndex: 8,
+                  endColumnIndex: 10,
                 },
               ],
               booleanRule: {
@@ -1774,7 +1774,7 @@ async function applyResumesSheetLayout(args: {
                   sheetId: args.sheetId,
                   startRowIndex: 2,
                   startColumnIndex: 0,
-                  endColumnIndex: 8,
+                  endColumnIndex: 10,
                 },
               ],
               booleanRule: {
@@ -2038,17 +2038,18 @@ async function appendJobSectionAtBottom(spreadsheetId: string, jobTitle: string)
 
   if (sectionStarts.length === 0) {
     // Brand-new sheet: add a bold title at the top and start first section below it
-    await sheets.spreadsheets.values.update({
+        await sheets.spreadsheets.values.update({
       spreadsheetId,
-      range: `${TAB}!A1:H2`,
+      range: `${TAB}!A1:J2`,
       valueInputOption: "RAW",
       requestBody: {
         values: [
-          ["EasyPaper Hiring Inbox", "", "", "", "", "", "", ""],
-          ["", "", "", "", "", "", "", ""],
+          ["EasyPaper Hiring Inbox", "", "", "", "", "", "", "", "", ""],
+          ["", "", "", "", "", "", "", "", "", ""],
         ],
       },
     });
+
 
     const titleSheetId = await getSheetIdByTitle(spreadsheetId, TAB);
     if (titleSheetId !== null) {
@@ -2063,7 +2064,7 @@ async function appendJobSectionAtBottom(spreadsheetId: string, jobTitle: string)
                   startRowIndex: 0,
                   endRowIndex: 1,
                   startColumnIndex: 0,
-                  endColumnIndex: 8,
+                  endColumnIndex: 10,
                 },
                 cell: {
                   userEnteredFormat: {
@@ -2095,17 +2096,18 @@ async function appendJobSectionAtBottom(spreadsheetId: string, jobTitle: string)
 
   
 
-  await sheets.spreadsheets.values.update({
+    await sheets.spreadsheets.values.update({
     spreadsheetId,
-    range: `${TAB}!A${headerRow1}:H${columnsRow1}`,
+    range: `${TAB}!A${headerRow1}:J${columnsRow1}`,
     valueInputOption: "RAW",
     requestBody: {
       values: [
-        [jobHeaderCell(jobTitle), "", "", "", "", "", "", ""],
+        [jobHeaderCell(jobTitle), "", "", "", "", "", "", "", "", ""],
         [...RESUME_COL_HEADERS],
       ],
     },
   });
+
 
   const updatedValues = await readResumesTabValues(spreadsheetId);
   const start0 = findJobSectionStart(updatedValues, jobTitle);
@@ -2138,7 +2140,7 @@ if (start0 !== -1 && sheetId !== null) {
               startRowIndex: start0,
               endRowIndex: start0 + 1,
               startColumnIndex: 0,
-              endColumnIndex: 8,
+              endColumnIndex: 10,
             },
             cell: {
               userEnteredFormat: {
@@ -2161,7 +2163,7 @@ if (start0 !== -1 && sheetId !== null) {
               startRowIndex: start0 + 1,
               endRowIndex: start0 + 2,
               startColumnIndex: 0,
-              endColumnIndex: 8,
+              endColumnIndex: 10,
             },
             cell: {
               userEnteredFormat: {
@@ -2374,7 +2376,7 @@ await sheets.spreadsheets.batchUpdate({
             startRowIndex: insertAt0,
             endRowIndex: insertAt0 + 1,
             startColumnIndex: 0, // A
-            endColumnIndex: 8,   // H
+            endColumnIndex: 10,   // 3
           },
           cell: {
             userEnteredFormat: {
@@ -2663,7 +2665,7 @@ try {
                     startRowIndex: i,
                     endRowIndex: i + 1,
                     startColumnIndex: 0,
-                    endColumnIndex: 8,
+                    endColumnIndex: 10,
                   },
                   cell: {
                     userEnteredFormat: {
@@ -2692,7 +2694,7 @@ try {
                     startRowIndex: i + 1,
                     endRowIndex: i + 2,
                     startColumnIndex: 0,
-                    endColumnIndex: 8,
+                    endColumnIndex: 10,
                   },
                   cell: {
                     userEnteredFormat: {
