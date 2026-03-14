@@ -2470,11 +2470,11 @@ const alreadyPresent = parts.some((part: string) => {
     });
     return { ok: true, skipped: true, rowNumber: targetRowNumber };
   }
-
+  const pageNumber = parts.length + 1;
   const supportDocLink = `${BASE_URL}/r/${args.existingRequestId}`;
-  const supportDocEntry = `${newDocLabelRaw} | ${supportDocLink}`;
+  const supportDocEntry = `=HYPERLINK("${supportDocLink}","page${pageNumber}")`;
   const nextValue = parts.length ? `${parts.join(", ")}, ${supportDocEntry}` : supportDocEntry;
-
+   
   await sheets.spreadsheets.values.update({
     spreadsheetId: args.spreadsheetId,
     range: `${TAB}!F${targetRowNumber}`,
