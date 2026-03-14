@@ -1689,18 +1689,7 @@ async function applyResumesSheetLayout(args: {
   },
 },
 
-        {
-          updateDimensionProperties: {
-            range: {
-              sheetId: args.sheetId,
-              dimension: "COLUMNS",
-              startIndex: 6, // G = Called
-              endIndex: 7,
-            },
-            properties: { pixelSize: 100 },
-            fields: "pixelSize",
-          },
-        },
+        
         {
           setDataValidation: {
             range: {
@@ -1790,18 +1779,7 @@ async function applyResumesSheetLayout(args: {
             index: 0,
           },
         },
-        {
-          updateDimensionProperties: {
-            range: {
-              sheetId: args.sheetId,
-              dimension: "COLUMNS",
-            
-              endIndex: 8,
-            },
-            properties: { pixelSize: 260 },
-            fields: "pixelSize",
-          },
-        },
+        
       ],
     },
   });
