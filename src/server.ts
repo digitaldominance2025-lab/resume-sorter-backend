@@ -2432,13 +2432,21 @@ const values = formulaResp.data.values || [];
   }
 
   if (targetRowNumber < 0) {
-    console.log("⚠️ SUPPORTING_DOC_TARGET_ROW_NOT_FOUND", {
-      spreadsheetId: args.spreadsheetId,
-      existingRequestId: args.existingRequestId,
-      filename: args.filename,
-    });
-    return { ok: false, reason: "target_row_not_found" as const };
-  }
+  const linkSamples = values.slice(0, 20).map((row: any[], idx: number) => ({
+    rowNumber: idx + 1,
+    colA: safeStr(row?.[0]),
+    colE: safeStr(row?.[4]),
+    colF: safeStr(row?.[5]),
+  }));
+
+  console.log("⚠️ SUPPORTING_DOC_TARGET_ROW_NOT_FOUND", {
+    spreadsheetId: args.spreadsheetId,
+    existingRequestId: args.existingRequestId,
+    filename: args.filename,
+    linkSamples,
+  });
+  return { ok: false, reason: "target_row_not_found" as const };
+}
 
   const existingCell = safeStr(values[targetRowNumber - 1]?.[5]); // column F = Supporting Documents
 
