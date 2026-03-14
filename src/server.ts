@@ -751,6 +751,7 @@ async function saveInboundDocToDb(args: {
   billingStatus?: string;
   blockedReason?: string;
   filename?: string;
+  fileHash?: string;
   r2Bucket?: string;
   r2Key?: string;
   docType?: string;
@@ -766,7 +767,7 @@ async function saveInboundDocToDb(args: {
       r2Key: safeStr(args.r2Key),
     });
 
-        await pool.query(
+        await pool.query(  
       `
       INSERT INTO inbound_docs (
               source, 
@@ -3234,6 +3235,7 @@ if (senderAlreadyHasResume && docType === "RESUME") {
   billingStatus: billingStatus || undefined,
   blockedReason: blockedReason || undefined,
   filename: args.filename,
+  fileHash: args.fileHash,
   r2Bucket: args.r2?.bucket,
   r2Key: args.r2?.key,
   docType,
