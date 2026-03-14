@@ -2432,6 +2432,26 @@ const values = formulaResp.data.values || [];
   }
 
   if (targetRowNumber < 0) {
+  for (let i = values.length - 1; i >= 0; i--) {
+    const row = values[i] || [];
+    const linkCell = safeStr(row?.[4]); // column E = Link
+    const linkLabelNorm = normalizeDocLabel(linkCell);
+
+    if (linkLabelNorm && linkLabelNorm === newDocLabelNorm) {
+      targetRowNumber = i + 1;
+      console.log("🧷 SUPPORTING_DOC_FALLBACK_ROW_MATCH", {
+        spreadsheetId: args.spreadsheetId,
+        existingRequestId: args.existingRequestId,
+        filename: args.filename,
+        rowNumber: targetRowNumber,
+        linkCell,
+      });
+      break;
+    }
+  }
+}
+
+if (targetRowNumber < 0) {
   const linkSamples = values.slice(0, 20).map((row: any[], idx: number) => ({
     rowNumber: idx + 1,
     colA: safeStr(row?.[0]),
