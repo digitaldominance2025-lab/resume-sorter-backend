@@ -2512,7 +2512,9 @@ if (targetRowNumber < 0) {
   }
 
   const pageNumber = usedPages.length + 1;
-  const supportDocLink = `${BASE_URL}/r/${args.existingRequestId}`;
+  const supportDocLink = `${APP_URL}/r/${args.existingRequestId}`;
+
+
   const supportDocFormula = `=HYPERLINK("${supportDocLink}","page${pageNumber}")`;
 
    const targetColumn = pageNumber === 1 ? "F" : pageNumber === 2 ? "G" : pageNumber === 3 ? "H" : "";
