@@ -2595,19 +2595,20 @@ try {
   if (!hasAnyJobSections && values.length === 0) {
      
     await sheets.spreadsheets.values.update({
-      spreadsheetId,
-      range: `${TAB}!A1:H5`,
-      valueInputOption: "RAW",
-      requestBody: {
-        values: [
-          [jobHeaderCell("Unsorted"), "", "", "", "", "", "", ""],
-          [...RESUME_COL_HEADERS],
-          ["", "", "", "", "", "", "", ""],
-          [jobHeaderCell("General Submissions"), "", "", "", "", "", "", ""],
-          [...RESUME_COL_HEADERS],
-        ],
-      },
-    });
+  spreadsheetId,
+  range: `${TAB}!A1:J5`,
+  valueInputOption: "RAW",
+  requestBody: {
+    values: [
+      [jobHeaderCell("Unsorted"), "", "", "", "", "", "", "", "", ""],
+      [...RESUME_COL_HEADERS],
+      ["", "", "", "", "", "", "", "", "", ""],
+      [jobHeaderCell("General Submissions"), "", "", "", "", "", "", "", "", ""],
+      [...RESUME_COL_HEADERS],
+    ],
+  },
+});
+
 
     values = await readResumesTabValues(spreadsheetId);
         if (sheetId != null) {
