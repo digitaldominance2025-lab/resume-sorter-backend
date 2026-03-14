@@ -2457,19 +2457,7 @@ if (targetRowNumber < 0) {
   .map((s: string) => s.trim())
   .filter(Boolean);
 
-const alreadyPresent = parts.some((part: string) => {
-  const labelOnly = safeStr(part).split("|")[0].trim();
-  return normalizeDocLabel(labelOnly) === newDocLabelNorm;
-});
-  if (alreadyPresent) {
-    console.log("🧷 SUPPORTING_DOC_ALREADY_PRESENT", {
-      spreadsheetId: args.spreadsheetId,
-      existingRequestId: args.existingRequestId,
-      filename: args.filename,
-      rowNumber: targetRowNumber,
-    });
-    return { ok: true, skipped: true, rowNumber: targetRowNumber };
-  }
+  const alreadyPresent = false;
   const pageNumber = parts.length + 1;
   const supportDocLink = `${BASE_URL}/r/${args.existingRequestId}`;
   const supportDocEntry = `=HYPERLINK("${supportDocLink}","page${pageNumber}")`;
