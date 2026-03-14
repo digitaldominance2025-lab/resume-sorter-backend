@@ -4071,6 +4071,17 @@ if (docType !== "RESUME") {
 }
 const fileHash = sha256Hex(buf);
 
+console.log("🧪 RESEND_BEFORE_PROCESS_INBOUND_DOC", {
+  requestId: getRequestId(req),
+  filename: safeName,
+  toEmail,
+  senderEmail,
+  r2Key: safeStr(r2?.key),
+  docType,
+  extractedChars: extractedText.length,
+  supportingDocuments: attachmentNames.filter((n: string) => n !== safeName),
+});
+
 const result = await processInboundDoc({
   requestId: getRequestId(req),
   source: "resend",
@@ -4085,6 +4096,16 @@ const result = await processInboundDoc({
   r2,
   savedLocal: null,
   deletedLocal: true,
+});
+
+console.log("🧪 RESEND_AFTER_PROCESS_INBOUND_DOC", {
+  requestId: getRequestId(req),
+  filename: safeName,
+  toEmail,
+  senderEmail,
+  r2Key: safeStr(r2?.key),
+  docType,
+  resultOk: !!result,
 });
 
           processed.push({ ok: true, filename: safeName, r2Key: r2.key, docType, result });
