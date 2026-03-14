@@ -1551,11 +1551,7 @@ async function applyResumesSheetLayout(args: {
   spreadsheetId: string;
   sheetId: number;
 }) {
-  console.log("🧪 APPLY_RESUMES_LAYOUT_DEBUG", {
-    spreadsheetId: args.spreadsheetId,
-    sheetId: args.sheetId,
-    widths: { A: 160, B: 110, C: 140, D: 500, E: 180, F: 240, G: 100, H: 260 },
-  });
+  
 
   await args.sheets.spreadsheets.batchUpdate({
     spreadsheetId: args.spreadsheetId,
@@ -2045,14 +2041,7 @@ async function appendJobSectionAtBottom(spreadsheetId: string, jobTitle: string)
   const headerRow1 = startRow1;
   const columnsRow1 = startRow1 + 1;
 
-  console.log("🧪 JOB_SECTION_APPEND_DEBUG", {
-    spreadsheetId,
-    jobTitle,
-    sectionStarts,
-    startRow1,
-    headerRow1,
-    columnsRow1,
-  });
+  
 
   await sheets.spreadsheets.values.update({
     spreadsheetId,
@@ -2328,14 +2317,7 @@ const rowNumber = insertAt0 + 1; // 1-based for A1 notation
   args.row.notes || "",
 ]];
 
-console.log("🧪 SHEET_WRITE_DEBUG", {
-  spreadsheetId: args.spreadsheetId,
-  jobTitle: args.jobTitle,
-  requestId: args.row.requestId,  
-  insertAt0,
-  rowNumber,
-  rowValues: rowValues[0],
-});
+
 
 // Reset the whole target row formatting first (A:E)
 await sheets.spreadsheets.batchUpdate({
@@ -2475,7 +2457,10 @@ if (targetRowNumber < 0) {
   .map((s: string) => s.trim())
   .filter(Boolean);
 
-const alreadyPresent = parts.some((part: string) => normalizeDocLabel(part) === newDocLabelNorm);
+const alreadyPresent = parts.some((part: string) => {
+  const labelOnly = safeStr(part).split("|")[0].trim();
+  return normalizeDocLabel(labelOnly) === newDocLabelNorm;
+});
   if (alreadyPresent) {
     console.log("🧷 SUPPORTING_DOC_ALREADY_PRESENT", {
       spreadsheetId: args.spreadsheetId,
@@ -2486,7 +2471,9 @@ const alreadyPresent = parts.some((part: string) => normalizeDocLabel(part) === 
     return { ok: true, skipped: true, rowNumber: targetRowNumber };
   }
 
-  const nextValue = parts.length ? `${parts.join(", ")}, ${newDocLabelRaw}` : newDocLabelRaw;
+  const supportDocLink = `${BASE_URL}/r/${args.existingRequestId}`;
+  const supportDocEntry = `${newDocLabelRaw} | ${supportDocLink}`;
+  const nextValue = parts.length ? `${parts.join(", ")}, ${supportDocEntry}` : supportDocEntry;
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: args.spreadsheetId,
@@ -2559,7 +2546,7 @@ try {
   // HARD REPAIR:
   // If no visible JOB sections exist, force-write them into the top rows.
   if (!hasAnyJobSections && values.length === 0) {
-    console.log("🧪 RESUMES_TAB_HARD_REPAIR_START", { spreadsheetId });   
+     
     await sheets.spreadsheets.values.update({
       spreadsheetId,
       range: `${TAB}!A1:H5`,
@@ -2583,10 +2570,7 @@ try {
         sheetId,
       });
     } 
-    console.log("🧪 RESUMES_TAB_HARD_REPAIR_AFTER_READ", {
-  spreadsheetId,
-  topRows: values.slice(0, 8),
-}); 
+    
   }
 
   // Repair header rows for every JOB section
@@ -2723,15 +2707,8 @@ async function appendGeneralSubmissionRow(
   await ensureJobSectionExists(spreadsheetId, "General Submissions");
 
   // Append using the SAME row schema as resumes, but with score=null and summary=reason
-console.log("🧪 GENERAL_SUBMISSIONS_DEBUG", {
-  spreadsheetId,
-  requestId: row.requestId,
-  filename: row.filename,
-  reason: row.reason,
-  r2Key: row.r2Key,
-});
-  
 
+  
   devLog("📝 GENERAL_SUBMISSION_SECTION_APPENDED:", spreadsheetId, row.requestId);
 }
 
@@ -2984,12 +2961,7 @@ async function processInboundDoc(args: {
   const extractedTooLarge = extractedTextRaw.length > MAX_EXTRACTED_CHARS;
   const extractedText = extractedTooLarge ? extractedTextRaw.slice(0, MAX_EXTRACTED_CHARS) : extractedTextRaw;
   
-  console.log("🧪 AFTER_EXTRACT_BEFORE_START", {
-  requestId: args.requestId,
-  filename: args.filename,
-  extractedChars: extractedText.length,
-  preview: safeStr(extractedText).slice(0, 200),
-});
+  
   logInfo("PROCESS_INBOUND_START", {
   requestId: args.requestId,
   source: args.source,
@@ -2998,19 +2970,10 @@ async function processInboundDoc(args: {
 });
 // file-hash duplicate check goes after customerId is resolved
 // probe to confirm extraction worked
-console.log("🧪 AFTER_EXTRACT_BEFORE_START", {
-  requestId: args.requestId,
-  filename: args.filename,
-  extractedChars: extractedText?.length || 0,
-  preview: safeStr(extractedText).slice(0, 200),
-});
+
 
 // probe before classification
-console.log("🧪 BEFORE_DOCTYPE_CLASSIFY", {
-  requestId: args.requestId,
-  filename: args.filename,
-  extractedChars: extractedText?.length || 0,
-});
+
 
 let docType: "RESUME" | "NON_RESUME" = "NON_RESUME";
 
@@ -3031,14 +2994,7 @@ try {
 }
 
 
-console.log("🧪 PROCESS_INBOUND_DOC_TYPE", {
-  requestId: args.requestId,
-  filename: args.filename,
-  docType,
-  extractedChars: extractedText?.length || 0,
-  preview: extractedText?.slice(0, 120),
-});
-  if (extractedTooLarge) {
+    if (extractedTooLarge) {
     logWarn("EXTRACT_TOO_LARGE", {
       requestId: args.requestId,
       filename: args.filename,
@@ -3192,12 +3148,7 @@ if (customerId && senderEmail) {
 }
 
 if (senderAlreadyHasResume && docType === "RESUME") {
-  console.log("🧪 SENDER_FORCE_NON_RESUME", {
-    requestId: args.requestId,
-    customerId,
-    senderEmail,
-    filename: args.filename,
-  });
+  
   docType = "NON_RESUME";
 }
   const customerRubric = customerId ? await getCustomerRubric(customerId) : null;
@@ -3947,16 +3898,7 @@ app.post(
   rateLimit("resend_inbound"),
   express.raw({ type: "application/json" }),
   async (req: Request, res: Response, next: any) => {
-    console.log("🧪 RESEND_ROUTE_ENTER", {
-      requestId: getRequestId(req),
-      method: req.method,
-      contentType: safeStr(req.headers["content-type"]),
-      hasBody: !!req.body,
-      bodyType: Buffer.isBuffer(req.body) ? "buffer" : typeof req.body,
-      svixId: !!req.headers["svix-id"],
-      svixTs: !!req.headers["svix-timestamp"],
-      svixSig: !!req.headers["svix-signature"],
-    });
+    
 
     try {
       if (!RESEND_WEBHOOK_SECRET) return res.status(500).json({ ok: false, error: "missing_resend_webhook_secret" });
@@ -4018,13 +3960,7 @@ app.post(
       }
 
       const type = safeStr(evt?.type);
-      console.log("🧪 RESEND_WEBHOOK_VERIFIED", {
-       type,
-      emailId: safeStr(evt?.data?.id || evt?.data?.email_id),
-      svixId,
-      dataKeys: Object.keys(evt?.data || {}),
-      requestId: getRequestId(req),
-      }); 
+      
       const emailId = safeStr(evt?.data?.id || evt?.data?.email_id);
 
       logInfo("RESEND_VERIFIED_EVENT", {
@@ -4053,17 +3989,7 @@ app.post(
       const attachmentNames = atts
          .map((a) => safeStr(a?.filename))
          .filter(Boolean);
-      console.log("🧪 RESEND_ATTACHMENTS", {
-      emailId,
-      toEmail,
-      attachmentCount: atts.length,
-      attachments: atts.map((a: any) => ({
-      id: safeStr(a?.id),
-      filename: safeStr(a?.filename),
-      size: Number(a?.size || 0),
-      hasDownloadUrl: !!safeStr(a?.download_url),
-     })),
-    });
+      
       const processed: any[] = [];
 
       if (atts.length) {
@@ -4213,17 +4139,6 @@ if (docType !== "RESUME") {
 }
 const fileHash = sha256Hex(buf);
 
-console.log("🧪 RESEND_BEFORE_PROCESS_INBOUND_DOC", {
-  requestId: getRequestId(req),
-  filename: safeName,
-  toEmail,
-  senderEmail,
-  r2Key: safeStr(r2?.key),
-  docType,
-  extractedChars: extractedText.length,
-  supportingDocuments: attachmentNames.filter((n: string) => n !== safeName),
-});
-
 const result = await processInboundDoc({
   requestId: getRequestId(req),
   source: "resend",
@@ -4240,15 +4155,7 @@ const result = await processInboundDoc({
   deletedLocal: true,
 });
 
-console.log("🧪 RESEND_AFTER_PROCESS_INBOUND_DOC", {
-  requestId: getRequestId(req),
-  filename: safeName,
-  toEmail,
-  senderEmail,
-  r2Key: safeStr(r2?.key),
-  docType,
-  resultOk: !!result,
-});
+
 
           processed.push({ ok: true, filename: safeName, r2Key: r2.key, docType, result });
         }
@@ -5467,12 +5374,7 @@ async function runNightlyJob(): Promise<{ ok: true; date: string; report: string
   // Trial enforcement
   for (const c of customers) {
        
-    console.log("🧪 TRIAL_CHECK_DEBUG:", {
-      customerId: c.customerId,
-      companyName: c.companyName,
-      status: c.status,
-      trialEndsAtISO: c.trialEndsAtISO,
-    });   
+     
     const trialEnds = parseISODate(c.trialEndsAtISO);
     const status = (c.status || "").toLowerCase();
     if (!trialEnds) continue;
