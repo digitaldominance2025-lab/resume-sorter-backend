@@ -1629,17 +1629,66 @@ async function applyResumesSheetLayout(args: {
           },
         },
         {
-          updateDimensionProperties: {
-            range: {
-              sheetId: args.sheetId,
-              dimension: "COLUMNS",
-              startIndex: 5, // F = Supporting Documents
-              endIndex: 6,
-            },
-            properties: { pixelSize: 240 },
-            fields: "pixelSize",
-          },
-        },
+  updateDimensionProperties: {
+    range: {
+      sheetId: args.sheetId,
+      dimension: "COLUMNS",
+      startIndex: 5, // F = Page1
+      endIndex: 6,
+    },
+    properties: { pixelSize: 80 },
+    fields: "pixelSize",
+  },
+},
+{
+  updateDimensionProperties: {
+    range: {
+      sheetId: args.sheetId,
+      dimension: "COLUMNS",
+      startIndex: 6, // G = Page2
+      endIndex: 7,
+    },
+    properties: { pixelSize: 80 },
+    fields: "pixelSize",
+  },
+},
+{
+  updateDimensionProperties: {
+    range: {
+      sheetId: args.sheetId,
+      dimension: "COLUMNS",
+      startIndex: 7, // H = Page3
+      endIndex: 8,
+    },
+    properties: { pixelSize: 80 },
+    fields: "pixelSize",
+  },
+},
+{
+  updateDimensionProperties: {
+    range: {
+      sheetId: args.sheetId,
+      dimension: "COLUMNS",
+      startIndex: 8, // I = Called
+      endIndex: 9,
+    },
+    properties: { pixelSize: 100 },
+    fields: "pixelSize",
+  },
+},
+{
+  updateDimensionProperties: {
+    range: {
+      sheetId: args.sheetId,
+      dimension: "COLUMNS",
+      startIndex: 9, // J = Notes
+      endIndex: 10,
+    },
+    properties: { pixelSize: 260 },
+    fields: "pixelSize",
+  },
+},
+
         {
           updateDimensionProperties: {
             range: {
@@ -1657,8 +1706,8 @@ async function applyResumesSheetLayout(args: {
             range: {
               sheetId: args.sheetId,
               startRowIndex: 2,
-              startColumnIndex: 6, // G = Called
-              endColumnIndex: 7,
+              startColumnIndex: 8, // I = Called
+               endColumnIndex: 9,
             },
             rule: {
               condition: {
@@ -1746,7 +1795,7 @@ async function applyResumesSheetLayout(args: {
             range: {
               sheetId: args.sheetId,
               dimension: "COLUMNS",
-              startIndex: 7, // H = Notes
+            
               endIndex: 8,
             },
             properties: { pixelSize: 260 },
@@ -1823,10 +1872,13 @@ const RESUME_COL_HEADERS = [
   "Decision",
   "Summary",
   "Link",
-  "Supporting Documents",
+  "Page1",
+  "Page2",
+  "Page3",
   "Called",
   "Notes",
 ];
+
 
 // ✅ ONE TAB ONLY: rename first tab to "Resumes" and delete all others
 async function ensureSingleTabResumes(spreadsheetId: string) {
@@ -2201,13 +2253,16 @@ async function appendResumeUnderJobSection(args: {
     decision?: string;
     summary: string;
     r2Key: string;
-    resumeLink?: string;
-    supportingDocuments?: string;
+    link?: string;
+    page1?: string;
+    page2?: string;
+    page3?: string;
     called?: string;
     notes?: string;
     requestId: string;
   };
 }) {
+
   const sheets = google.sheets({ version: "v4", auth: oauth2Client });
   const TAB = "Resumes";
 
@@ -2240,32 +2295,15 @@ if (start0 === -1) {
     insertAt0 = i + 1;
   }
    const sheetId = await getSheetIdByTitle(args.spreadsheetId, TAB);
-   let supportingDocsValue = args.row.supportingDocuments || "";
+   const page1Cell = args.row.page1 ? `=HYPERLINK("${args.row.page1}","page1")` : "";
+const page2Cell = args.row.page2 ? `=HYPERLINK("${args.row.page2}","page2")` : "";
+const page3Cell = args.row.page3 ? `=HYPERLINK("${args.row.page3}","page3")` : "";
 
-{
-  const normalizeDocLabel = (s: string) =>
-    safeStr(s)
-      .toLowerCase()
-      .replace(/=hyperlink\(\s*"[^"]*"\s*,\s*"([^"]*)"\s*\)/i, "$1")
-      .replace(/\.[a-z0-9]+$/i, "")
-      .replace(/[^a-z0-9]/g, "");
-
-  const mainResumeLabel = normalizeDocLabel(args.row.filename || "");
-
-  const parts = supportingDocsValue
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-
-  const filtered = parts.filter((part) => normalizeDocLabel(part) !== mainResumeLabel);
-
-  supportingDocsValue = filtered.join(", ");
-}
 // If we can't resolve sheetId, fall back to values.append at bottom (safe)
 if (sheetId == null) {
   await sheets.spreadsheets.values.append({
     spreadsheetId: args.spreadsheetId,
-    range: `${TAB}!A:H`,
+    range: `${TAB}!A:J`,
     valueInputOption: "USER_ENTERED",
     insertDataOption: "INSERT_ROWS",
     requestBody: {
@@ -2274,8 +2312,10 @@ if (sheetId == null) {
         args.row.score ?? "",
         args.row.decision ?? "",
         args.row.summary || "",
-        args.row.resumeLink ? `=HYPERLINK("${args.row.resumeLink}","resume")` : "",
-        supportingDocsValue,
+        args.row.link ? `=HYPERLINK("${args.row.link}","resume")` : "",
+        page1Cell,
+        page2Cell,
+        page3Cell,
         safeStr(args.row.called).toUpperCase() === "YES" ? "YES" : "",
         args.row.notes || "",
       ]],
@@ -2283,6 +2323,7 @@ if (sheetId == null) {
   });
   return;
 }
+
 
 // Insert a blank row at insertAt0 (0-based) to keep section intact
 await sheets.spreadsheets.batchUpdate({
@@ -2311,9 +2352,11 @@ const rowNumber = insertAt0 + 1; // 1-based for A1 notation
   args.row.score ?? "",
   args.row.decision ?? "",
   args.row.summary || "",
-  args.row.resumeLink ? `=HYPERLINK("${args.row.resumeLink}","resume")` : "",
-  supportingDocsValue,
-  safeStr(args.row.called).toUpperCase() === "YES" ? "YES" : "",
+  args.row.link || "",
+  args.row.page1 || "",
+  args.row.page2 || "",
+  args.row.page3 || "",
+  args.row.called ?? "FALSE",
   args.row.notes || "",
 ]];
 
@@ -2450,37 +2493,53 @@ if (targetRowNumber < 0) {
   return { ok: false, reason: "target_row_not_found" as const };
 }
 
-  const existingCell = safeStr(values[targetRowNumber - 1]?.[5]); // column F = Supporting Documents
+    const existingPage1 = safeStr(values[targetRowNumber - 1]?.[5]); // F = Page1
+  const existingPage2 = safeStr(values[targetRowNumber - 1]?.[6]); // G = Page2
+  const existingPage3 = safeStr(values[targetRowNumber - 1]?.[7]); // H = Page3
 
- const parts = (existingCell.match(/page\d+/gi) || [])
-  .map((s: string) => s.trim().toLowerCase());
+  const usedPages = [existingPage1, existingPage2, existingPage3].filter(Boolean);
 
 
-  const alreadyPresent = false;
-  const pageNumber = parts.length + 1;
+   const alreadyPresent =
+    existingPage1.includes(`/r/${args.existingRequestId}`) ||
+    existingPage2.includes(`/r/${args.existingRequestId}`) ||
+    existingPage3.includes(`/r/${args.existingRequestId}`);
+
+  if (alreadyPresent) {
+    return { ok: true, rowNumber: targetRowNumber, skipped: "already_present" as const };
+  }
+
+  const pageNumber = usedPages.length + 1;
   const supportDocLink = `${BASE_URL}/r/${args.existingRequestId}`;
-  const supportDocEntry = `page${pageNumber}`;
+  const supportDocFormula = `=HYPERLINK("${supportDocLink}","page${pageNumber}")`;
 
-  const nextValue = parts.length ? `${parts.join(", ")}, ${supportDocEntry}` : supportDocEntry;
-   
+   const targetColumn = pageNumber === 1 ? "F" : pageNumber === 2 ? "G" : pageNumber === 3 ? "H" : "";
+
+  if (!targetColumn) {
+    return { ok: false, reason: "page_slots_full" as const, rowNumber: targetRowNumber };
+  }
+
   await sheets.spreadsheets.values.update({
     spreadsheetId: args.spreadsheetId,
-    range: `${TAB}!F${targetRowNumber}`,
+    range: `${TAB}!${targetColumn}${targetRowNumber}`,
     valueInputOption: "USER_ENTERED",
     requestBody: {
-      values: [[nextValue]],
+      values: [[supportDocFormula]],
     },
   });
 
-  console.log("🧷 SUPPORTING_DOC_APPENDED", {
+
+    console.log("🧷 SUPPORTING_DOC_APPENDED", {
     spreadsheetId: args.spreadsheetId,
     existingRequestId: args.existingRequestId,
     filename: args.filename,
     rowNumber: targetRowNumber,
-    nextValue,
+    targetColumn,
+    supportDocFormula,
   });
 
-  return { ok: true, rowNumber: targetRowNumber, nextValue };
+
+  return { ok: true, rowNumber: targetRowNumber, targetColumn, pageNumber };
 }
 async function ensureSheetTabExists(spreadsheetId: string, title: string) {
   const sheets = google.sheets({ version: "v4", auth: oauth2Client });
@@ -2725,14 +2784,17 @@ async function appendResumeRow(
       filename: row.filename,
       score: row.score ?? null,
       decision:
-        Number(row.score) >= 61 ? "CALL" : Number(row.score) >= 41 ? "MAYBE" : "NO",
+      Number(row.score) >= 61 ? "CALL" : Number(row.score) >= 41 ? "MAYBE" : "NO",
       summary: safeStr(row.summary || "").slice(0, 5000),
       r2Key: row.r2Key || "",
-      resumeLink: row.resumeLink || "",
-      supportingDocuments: "",
+      link: row.resumeLink || "",
+      page1: "",
+      page2: "",
+      page3: "",
       called: "NO",
       notes: "",
       requestId: row.requestId || "",
+
     },
   });
 
@@ -3394,8 +3456,10 @@ if (blocked) {
 
               summary: summary.slice(0, 2000),
               r2Key,
-              resumeLink: resumeLinkCell,
-              supportingDocuments: supportingDocumentsCell,
+              link: resumeLinkCell,
+              page1: "",
+              page2: "",
+              page3: "",
               called: "NO",
               notes: "",
               requestId: args.requestId,
@@ -3427,11 +3491,14 @@ if (blocked) {
     decision: "NO",
     summary: reasonText.slice(0, 2000), // ✅ store why it went here
     r2Key,
-    resumeLink: resumeLinkCell,
-    supportingDocuments: supportingDocumentsCell,
+    link: resumeLinkCell,
+    page1: "",
+    page2: "",
+    page3: "",
     called: "NO",
     notes: "",
     requestId: args.requestId,
+
   },
 });
 
