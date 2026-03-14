@@ -2946,41 +2946,7 @@ let match: CustomerRow | null = null;
 if (customerId) {
   resolvedCustomerId = customerId;
 }
-   // 🧾 Duplicate detection (30-day window)
-// Do NOT hard-return anymore.
-// We want later duplicates / extra docs to be attachable to the original sheet row.
-let duplicateWithin30Days = false;
-
-if (args.fileHash && customerId) {
-  try {
-    const dup = await pool.query(
-      `
-      SELECT id, request_id, r2_key, filename
-      FROM inbound_docs
-      WHERE customer_id = $1
-        AND file_hash = $2
-        AND created_at > NOW() - INTERVAL '30 days'
-      ORDER BY created_at ASC
-      LIMIT 1
-      `,
-      [customerId, args.fileHash]
-    );
-
-    if (dup.rows.length > 0) {
-      duplicateWithin30Days = true;
-
-      console.log("🧷 DUPLICATE_FILE_DETECTED:", {
-        customerId,
-        fileHash: args.fileHash,
-        filename: args.filename,
-        existingRequestId: safeStr(dup.rows[0]?.request_id),
-        existingR2Key: safeStr(dup.rows[0]?.r2_key),
-      });
-    }
-  } catch (e: any) {
-    console.warn("⚠️ FILE_HASH_DUP_CHECK_FAILED:", e?.message || e);
-  }
-}
+   
 // ✅ If customerId is provided, resolve customer directly (no intake email required)
 if (resolvedCustomerId) {
   try {
@@ -3018,7 +2984,41 @@ if (!resolvedCustomerId && toEmail) {
     console.warn("⚠️ CUSTOMER_RESOLVE_SKIPPED (google auth?):", e?.message || e);
   }
 }
-  const billingStatus = safeStr(match?.status || "");
+  // 🧾 Duplicate detection (30-day window)
+// Run this only AFTER customerId has been resolved.
+let duplicateWithin30Days = false;
+
+if (args.fileHash && customerId) {
+  try {
+    const dup = await pool.query(
+      `
+      SELECT id, request_id, r2_key, filename
+      FROM inbound_docs
+      WHERE customer_id = $1
+        AND file_hash = $2
+        AND created_at > NOW() - INTERVAL '30 days'
+      ORDER BY created_at ASC
+      LIMIT 1
+      `,
+      [customerId, args.fileHash]
+    );
+
+    if (dup.rows.length > 0) {
+      duplicateWithin30Days = true;
+
+      console.log("🧷 DUPLICATE_FILE_DETECTED:", {
+        customerId,
+        fileHash: args.fileHash,
+        filename: args.filename,
+        existingRequestId: safeStr(dup.rows[0]?.request_id),
+        existingR2Key: safeStr(dup.rows[0]?.r2_key),
+      });
+    }
+  } catch (e: any) {
+    console.warn("⚠️ FILE_HASH_DUP_CHECK_FAILED:", e?.message || e);
+  }
+}  
+const billingStatus = safeStr(match?.status || "");
   const gate = isProcessingAllowed(billingStatus);
   const blocked = !!customerId && gate.allowed === false;
    const blockedReason = blocked ? gate.reason || "billing_block" : null; 
