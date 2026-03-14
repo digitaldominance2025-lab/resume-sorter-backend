@@ -2625,31 +2625,7 @@ try {
     
   }
 
-  // Repair header rows for every JOB section
-  for (let i = 0; i < values.length; i++) {
-    const row = values[i] || [];
-    if (isJobHeaderRow(row)) {
-      const headerRowNumber = i + 2;
-      await sheets.spreadsheets.values.update({
-        spreadsheetId,
-        range: `Resumes!A${headerRowNumber}:H${headerRowNumber}`,
-        valueInputOption: "RAW",
-        requestBody: {
-          values: [[
-            "Date Received",
-            "Score",
-            "Decision",
-            "Summary",
-            "Link",
-            "Supporting Documents",
-            "Called",
-            "Notes",
-          ]],
-        },
-      });
-    }
-  }
-
+  
   // Repaint the two baseline section rows so they are visibly obvious
   const refreshed = await readResumesTabValues(spreadsheetId);
   if (sheetId != null) {
