@@ -3091,7 +3091,7 @@ if (args.fileHash && customerId) {
       WHERE customer_id = $1
         AND file_hash = $2
         AND created_at > NOW() - INTERVAL '30 days'
-      ORDER BY created_at ASC
+      ORDER BY created_at DESC
       LIMIT 1
       `,
       [customerId, args.fileHash]
