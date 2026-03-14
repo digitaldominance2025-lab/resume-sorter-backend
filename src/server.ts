@@ -2512,7 +2512,7 @@ if (targetRowNumber < 0) {
   }
 
   const pageNumber = usedPages.length + 1;
-  const supportDocLink = `${APP_URL}/r/${args.existingRequestId}`;
+  const supportDocLink = `https://resume-sorter-backend.onrender.com/r/${args.existingRequestId}`;
 
 
   const supportDocFormula = `=HYPERLINK("${supportDocLink}","page${pageNumber}")`;
