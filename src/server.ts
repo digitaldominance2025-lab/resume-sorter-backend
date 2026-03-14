@@ -2455,7 +2455,8 @@ if (targetRowNumber < 0) {
  const parts = existingCell
   .split(",")
   .map((s: string) => s.trim())
-  .filter(Boolean);
+  .filter(Boolean)
+  .filter((part: string) => /^=HYPERLINK\(/i.test(part));
 
   const alreadyPresent = false;
   const pageNumber = parts.length + 1;
