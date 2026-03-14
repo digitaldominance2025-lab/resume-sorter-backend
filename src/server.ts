@@ -2399,13 +2399,13 @@ await sheets.spreadsheets.batchUpdate({
 // Clear values only after format reset
 await sheets.spreadsheets.values.clear({
   spreadsheetId: args.spreadsheetId,
-  range: `${TAB}!A${rowNumber}:H${rowNumber}`,
+  range: `${TAB}!A${rowNumber}:J${rowNumber}`,
 });
 
 // Write clean values
 await sheets.spreadsheets.values.update({
   spreadsheetId: args.spreadsheetId,
-  range: `${TAB}!A${rowNumber}:H${rowNumber}`,
+  range: `${TAB}!A${rowNumber}:J${rowNumber}`,
   valueInputOption: "USER_ENTERED",
   requestBody: {
     values: rowValues,
