@@ -3877,7 +3877,12 @@ app.get("/auth/status", (_req: Request, res: Response) => {
 // ============================
 // Resend receiving helpers
 // ============================
-type ResendReceivedEmail = { id: string; to?: string[] | string; text?: string };
+type ResendReceivedEmail = {
+  id: string;
+  to?: string[] | string;
+  from?: any;
+  text?: string;
+};
 type ResendReceivedAttachment = {
   id: string;
   filename?: string;
@@ -3897,7 +3902,12 @@ async function resendRetrieveReceivedEmail(emailId: string): Promise<ResendRecei
     });
     const data = (resp.data as any)?.data || resp.data;
     if (!data) return null;
-    return { id: safeStr(data.id || emailId), to: (data as any).to, text: (data as any).text };
+    return {
+  id: safeStr(data.id || emailId),
+  to: (data as any).to,
+  from: (data as any).from,
+  text: (data as any).text,
+};
   } catch (e: any) {
     console.warn("⚠️ RESEND_RETRIEVE_RECEIVED_FAILED:", e?.response?.data || e?.message || e);
     return null;
