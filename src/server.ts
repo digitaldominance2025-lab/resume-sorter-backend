@@ -769,7 +769,17 @@ async function saveInboundDocToDb(args: {
       source: safeStr(args.source),
       r2Key: safeStr(args.r2Key),
     });
-
+       console.log("🧪 DB_INBOUND_INSERT_FULL", {
+  requestId: safeStr((args as any).requestId),
+  source: safeStr(args.source),
+  senderEmail: safeStr((args as any).senderEmail),
+  customerId: safeStr(args.customerId),
+  filename: safeStr(args.filename),
+  r2Bucket: safeStr(args.r2Bucket),
+  r2Key: safeStr(args.r2Key),
+  docType: safeStr(args.docType),
+  matchFound: !!args.matchFound,
+});
         await pool.query(  
       `
       INSERT INTO inbound_docs (
@@ -823,7 +833,13 @@ $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20::jsonb
       ]
     );
   } catch (e: any) {
-    console.warn("⚠️ saveInboundDocToDb failed (continuing):", e?.message || e);
+    console.warn("⚠️ saveInboundDocToDb failed (continuing):", {
+  message: e?.message || String(e),
+  detail: e?.detail,
+  code: e?.code,
+  constraint: e?.constraint,
+  table: e?.table,
+});
   }
 }
 
@@ -3112,7 +3128,27 @@ if (args.fileHash && customerId) {
   const sheetId = safeStr(match?.tallySheetId);
 
   if (existingRequestId && sheetId && args.filename) {
-    await appendSupportingDocToExistingRequest({
+    // Persist supporting doc so /r/:requestId can resolve it later
+     await saveInboundDocToDb({
+  source: args.source,
+  requestId: args.requestId,
+  toEmail,
+  senderEmail,
+  customerId,
+  resolvedCustomerId: customerId,
+  matchFound: !!customerId,
+  filename: args.filename,
+  fileHash: args.fileHash || "",
+  r2Bucket: safeStr(args.r2?.bucket || ""),
+  r2Key: safeStr(args.r2?.key || ""),
+  docType: "SUPPORTING_DOCUMENT",
+  extractedChars: 0,
+  textPreview: "",
+  aiScore: null,
+  aiJson: null,
+});
+    
+  await appendSupportingDocToExistingRequest({
       spreadsheetId: sheetId,
       existingRequestId,
       supportingRequestId: args.requestId,
@@ -3179,6 +3215,24 @@ if (senderAlreadyHasResume && docType !== "RESUME") {
     const sheetId = safeStr(match?.tallySheetId);
 
     if (sheetId && senderExistingResumeRequestId && args.filename) {
+          await saveInboundDocToDb({
+  source: args.source,
+  requestId: args.requestId,
+  toEmail,
+  senderEmail,
+  customerId,
+  resolvedCustomerId: customerId,
+  matchFound: !!customerId,
+  filename: args.filename,
+  fileHash: args.fileHash || "",
+  r2Bucket: safeStr(args.r2?.bucket || ""),
+  r2Key: safeStr(args.r2?.key || ""),
+  docType: "SUPPORTING_DOCUMENT",
+  extractedChars: 0,
+  textPreview: "",
+  aiScore: null,
+  aiJson: null,
+});
       await appendSupportingDocToExistingRequest({
         spreadsheetId: sheetId,
         existingRequestId: senderExistingResumeRequestId,
@@ -3206,6 +3260,23 @@ if (senderAlreadyHasResume) {
     // Attach this non-resume document as a supporting document to the first resume
     const sheetId = safeStr(match?.tallySheetId);
     if (sheetId && senderExistingResumeRequestId && args.filename) {
+        await saveInboundDocToDb({
+  source: args.source,
+  requestId: args.requestId,
+  toEmail,
+  senderEmail,
+  customerId,
+  matchFound: !!customerId,
+  filename: args.filename,
+  fileHash: args.fileHash || "",
+  r2Bucket: safeStr(args.r2?.bucket || ""),
+  r2Key: safeStr(args.r2?.key || ""),
+  docType: "SUPPORTING_DOCUMENT",
+  extractedChars: 0,
+  textPreview: "",
+  aiScore: null,
+  aiJson: null,
+});
       await appendSupportingDocToExistingRequest({
         spreadsheetId: sheetId,
         existingRequestId: senderExistingResumeRequestId,
@@ -4168,6 +4239,7 @@ app.post(
 
         // Process allowed attachments only
         for (const att of allowed) {
+          const docRequestId = genRequestId();
           const original = safeStr(att?.filename) || "attachment.bin";
           const safeName = normalizeUploadName(original);
           const url = safeStr(att?.download_url);
@@ -4221,7 +4293,7 @@ if (docType !== "RESUME") {
   const fileHash = sha256Hex(buf);
 
   const result = await processInboundDoc({
-    requestId: getRequestId(req),
+    requestId: docRequestId,
     source: "resend",
     filename: safeName,
     buffer: buf,
@@ -4243,7 +4315,7 @@ if (docType !== "RESUME") {
 const fileHash = sha256Hex(buf);
 
 const result = await processInboundDoc({
-  requestId: getRequestId(req),
+  requestId: docRequestId,
   source: "resend",
   filename: safeName,
   buffer: buf,
@@ -4429,19 +4501,36 @@ app.get("/r/:requestId", async (req: Request, res: Response, next: any) => {
       throw new AppError("Missing requestId", 400, "missing_requestId", true);
     }
 
-    // 1) Lookup inbound doc by requestId
-        const r = await pool.query(
-      `
-      SELECT request_id, customer_id, resolved_customer_id, r2_key, doc_type
-      FROM inbound_docs
-      WHERE request_id = $1
-         OR id::text = $1
-      ORDER BY created_at DESC
-      LIMIT 1
-      `,
-      [requestId]
-    );
+// 1) Lookup inbound doc by requestId
+const r = await pool.query(
+  `
+  SELECT request_id, customer_id, resolved_customer_id, r2_key, doc_type
+  FROM inbound_docs
+  WHERE request_id = $1
+
+  UNION ALL
+
+  SELECT request_id, customer_id, resolved_customer_id, r2_key, doc_type
+  FROM inbound_docs
+  WHERE id::text = $1
+    AND NOT EXISTS (
+      SELECT 1 FROM inbound_docs WHERE request_id = $1
+    )
+
+  LIMIT 1
+  `,
+  [requestId]
+);
     const row = r.rows?.[0];
+    console.log("🧪 R_LOOKUP_ROW", {
+  requestId,
+  found: !!row,
+  rowRequestId: safeStr(row?.request_id),
+  customerId: safeStr(row?.customer_id),
+  resolvedCustomerId: safeStr(row?.resolved_customer_id),
+  r2Key: safeStr(row?.r2_key),
+  docType: safeStr(row?.doc_type),
+});
     const r2Key = safeStr(row?.r2_key);
     const custId = safeStr(row?.resolved_customer_id || row?.customer_id);
     const docType = safeStr(row?.doc_type);
@@ -4450,10 +4539,10 @@ app.get("/r/:requestId", async (req: Request, res: Response, next: any) => {
       throw new AppError("Not found", 404, "not_found", true);
     }
 
-    // Optional safety: only allow resumes
-    if (docType && docType !== "RESUME") {
-      throw new AppError("Not found", 404, "not_found", true);
-    }
+    // Allow both main resumes and supporting documents
+if (docType && docType !== "RESUME" && docType !== "SUPPORTING_DOCUMENT") {
+  throw new AppError("Not found", 404, "not_found", true);
+}
 
     // 2) Validate customer active/allowed
     const customers = await getCustomersCached();
