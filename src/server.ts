@@ -434,6 +434,7 @@ async function ensureDbTables() {
         created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         source TEXT NOT NULL DEFAULT 'unknown',        -- 'resend' | 'inbound-file' | 'inbound-r2'
         to_email TEXT,
+        sender_email TEXT,
         customer_id TEXT,
         resolved_customer_id TEXT,
         match_found BOOLEAN NOT NULL DEFAULT false,
@@ -484,6 +485,7 @@ async function ensureDbTables() {
     // ============================
     try {
       await pool.query(`ALTER TABLE inbound_docs ADD COLUMN IF NOT EXISTS request_id TEXT;`);
+      await pool.query(`ALTER TABLE inbound_docs ADD COLUMN IF NOT EXISTS sender_email TEXT;`);
       await pool.query(`CREATE INDEX IF NOT EXISTS inbound_docs_request_id_idx ON inbound_docs(request_id);`);
       devLog("✅ DB inbound_docs.request_id ensured");
       try {
@@ -742,6 +744,7 @@ async function saveInboundDocToDb(args: {
   source: string;
   requestId?: string;
   toEmail?: string;
+  senderEmail?: string;
   customerId?: string;
   resolvedCustomerId?: string;
   candidateKey?: string;
@@ -773,6 +776,7 @@ async function saveInboundDocToDb(args: {
               source, 
               request_id,
               to_email,
+              sender_email,
               customer_id,
               resolved_customer_id,
               candidate_key,
@@ -798,6 +802,7 @@ $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19::jsonb
         safeStr(args.source) || "unknown",
         safeStr(args.requestId) || null,
         safeStr(args.toEmail) || null,
+        safeStr((args as any).senderEmail) || null,
         safeStr(args.customerId) || null,
         safeStr(args.resolvedCustomerId) || null,
         safeStr(args.candidateKey) || null,
@@ -3142,6 +3147,7 @@ const billingStatus = safeStr(match?.status || "");
   }
   // If this sender already has a prior resume for this customer,
 // do not let later files enter the main resume-scoring path.
+let senderExistingResumeRequestId = "";
 let senderAlreadyHasResume = false;
 
 if (customerId && senderEmail) {
@@ -3160,15 +3166,40 @@ if (customerId && senderEmail) {
     );
 
     senderAlreadyHasResume = priorResume.rows.length > 0;
+    senderExistingResumeRequestId = safeStr(priorResume.rows?.[0]?.request_id);
   } catch (e: any) {
     console.warn("⚠️ SENDER_PRIOR_RESUME_LOOKUP_FAILED:", e?.message || e);
   }
 }
 
+if (senderAlreadyHasResume && docType !== "RESUME") {
+  try {
+    const sheetId = safeStr(match?.tallySheetId);
+
+    if (sheetId && senderExistingResumeRequestId && args.filename) {
+      await appendSupportingDocToExistingRequest({
+        spreadsheetId: sheetId,
+        existingRequestId: senderExistingResumeRequestId,
+        filename: args.filename,
+      });
+
+      console.log("🧷 SUPPORTING_DOC_FROM_SAME_SENDER_APPENDED:", {
+        customerId,
+        senderEmail,
+        filename: args.filename,
+        existingRequestId: senderExistingResumeRequestId,
+        requestId: args.requestId,
+      });
+    }
+  } catch (e: any) {
+    console.warn("⚠️ SUPPORTING_DOC_FROM_SAME_SENDER_APPEND_FAILED:", e?.message || e);
+  }
+}
+
 if (senderAlreadyHasResume && docType === "RESUME") {
-  
   docType = "NON_RESUME";
 }
+
   const customerRubric = customerId ? await getCustomerRubric(customerId) : null;
   let matchedJobRubric: any = null;
   let matchedJobId = "";
@@ -3338,6 +3369,7 @@ if (blocked) {
   requestId: args.requestId, // 🔐 required for /r/:requestId
   candidateEmail: candidateEmail || undefined,
   toEmail,
+  senderEmail: senderEmail || undefined,
   customerId: customerId || undefined,
   resolvedCustomerId: resolvedCustomerId || undefined,
   matchFound: !!match,
@@ -4151,15 +4183,28 @@ const docType: "RESUME" | "NON_RESUME" =
   extractedText.trim().length > 0 ? classifyDocTypeFromText(extractedText) : "NON_RESUME";
 
 if (docType !== "RESUME") {
-  processed.push({
-    ok: true,
+  const fileHash = sha256Hex(buf);
+
+  const result = await processInboundDoc({
+    requestId: getRequestId(req),
+    source: "resend",
     filename: safeName,
-    r2Key: r2.key,
+    buffer: buf,
+    fileHash,
+    extractedText,
     docType,
-    supportingOnly: true,
+    toEmail,
+    senderEmail,
+    supportingDocuments: attachmentNames.filter((n: string) => n !== safeName),
+    r2,
+    savedLocal: null,
+    deletedLocal: true,
   });
+
+  processed.push({ ok: true, filename: safeName, r2Key: r2.key, docType, result });
   continue;
 }
+
 const fileHash = sha256Hex(buf);
 
 const result = await processInboundDoc({
