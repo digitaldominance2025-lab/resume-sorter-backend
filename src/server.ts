@@ -2408,6 +2408,7 @@ devLog("🧩 RESUME_APPENDED_UNDER_JOB:", args.spreadsheetId, args.jobTitle, { r
 async function appendSupportingDocToExistingRequest(args: {
   spreadsheetId: string;
   existingRequestId: string;
+  supportingRequestId: string;
   filename: string;
 }) {
   const sheets = google.sheets({ version: "v4", auth: oauth2Client });
@@ -2487,16 +2488,15 @@ if (targetRowNumber < 0) {
 
 
    const alreadyPresent =
-    existingPage1.includes(`/r/${args.existingRequestId}`) ||
-    existingPage2.includes(`/r/${args.existingRequestId}`) ||
-    existingPage3.includes(`/r/${args.existingRequestId}`);
-
+  existingPage1.includes(`/r/${args.supportingRequestId}`) ||
+  existingPage2.includes(`/r/${args.supportingRequestId}`) ||
+  existingPage3.includes(`/r/${args.supportingRequestId}`);
   if (alreadyPresent) {
     return { ok: true, rowNumber: targetRowNumber, skipped: "already_present" as const };
   }
 
   const pageNumber = usedPages.length + 1;
-  const supportDocLink = `https://resume-sorter-backend.onrender.com/r/${args.existingRequestId}`;
+  const supportDocLink = `${API_BASE_URL}/r/${args.supportingRequestId}`;
 
 
   const supportDocFormula = `=HYPERLINK("${supportDocLink}","page${pageNumber}")`;
@@ -3115,6 +3115,7 @@ if (args.fileHash && customerId) {
     await appendSupportingDocToExistingRequest({
       spreadsheetId: sheetId,
       existingRequestId,
+      supportingRequestId: args.requestId,
       filename: args.filename,
     });
   }
@@ -3181,6 +3182,7 @@ if (senderAlreadyHasResume && docType !== "RESUME") {
       await appendSupportingDocToExistingRequest({
         spreadsheetId: sheetId,
         existingRequestId: senderExistingResumeRequestId,
+        supportingRequestId: args.requestId,
         filename: args.filename,
       });
 
@@ -3197,9 +3199,31 @@ if (senderAlreadyHasResume && docType !== "RESUME") {
   }
 }
 
-if (senderAlreadyHasResume && docType === "RESUME") {
-  docType = "NON_RESUME";
+if (senderAlreadyHasResume) {
+  if (docType === "RESUME") {
+    docType = "NON_RESUME"; // If it's a resume from the same sender, convert it to non-resume.
+  } else if (docType !== "NON_RESUME" && senderExistingResumeRequestId) {
+    // Attach this non-resume document as a supporting document to the first resume
+    const sheetId = safeStr(match?.tallySheetId);
+    if (sheetId && senderExistingResumeRequestId && args.filename) {
+      await appendSupportingDocToExistingRequest({
+        spreadsheetId: sheetId,
+        existingRequestId: senderExistingResumeRequestId,
+        supportingRequestId: args.requestId,
+        filename: args.filename,
+      });
+
+      console.log("🧷 SUPPORTING_DOC_FROM_SAME_SENDER_APPENDED:", {
+        customerId,
+        senderEmail,
+        filename: args.filename,
+        existingRequestId: senderExistingResumeRequestId,
+        requestId: args.requestId,
+      });
+    }
+  }
 }
+
 
   const customerRubric = customerId ? await getCustomerRubric(customerId) : null;
   let matchedJobRubric: any = null;
