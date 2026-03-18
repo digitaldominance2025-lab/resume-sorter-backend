@@ -4778,7 +4778,67 @@ app.get("/customers/rubric", async (req: Request, res: Response, next: any) => {
     return next(e);
   }
 });
+// ============================
+// Marketing Tally API
+// ============================
+app.get("/marketing/tally", async (_req: Request, res: Response, next: any) => {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS marketing_stats (
+        key TEXT PRIMARY KEY,
+        value BIGINT NOT NULL DEFAULT 0,
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
 
+    await pool.query(`
+      INSERT INTO marketing_stats (key, value)
+      VALUES ('start_free_clicks', 8250)
+      ON CONFLICT (key) DO NOTHING;
+    `);
+
+    const r = await pool.query(
+      `SELECT value FROM marketing_stats WHERE key = 'start_free_clicks' LIMIT 1`
+    );
+
+    const count = Number(r?.rows?.[0]?.value || 8250);
+
+    return res.json({ ok: true, count });
+  } catch (e: any) {
+    return next(e);
+  }
+});
+
+app.post("/marketing/tally/increment", async (_req: Request, res: Response, next: any) => {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS marketing_stats (
+        key TEXT PRIMARY KEY,
+        value BIGINT NOT NULL DEFAULT 0,
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+
+    await pool.query(`
+      INSERT INTO marketing_stats (key, value)
+      VALUES ('start_free_clicks', 8250)
+      ON CONFLICT (key) DO NOTHING;
+    `);
+
+    const r = await pool.query(`
+      UPDATE marketing_stats
+      SET value = value + 1, updated_at = NOW()
+      WHERE key = 'start_free_clicks'
+      RETURNING value;
+    `);
+
+    const count = Number(r?.rows?.[0]?.value || 8251);
+
+    return res.json({ ok: true, count });
+  } catch (e: any) {
+    return next(e);
+  }
+});
 // ============================
 // Customers: setup
 // ============================
